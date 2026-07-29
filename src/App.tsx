@@ -5,6 +5,9 @@ import {
   useState,
 } from 'react'
 import './App.css'
+import { planSegments } from './video/planSegments'
+
+const TARGET_SEGMENT_SECONDS = 30
 
 // video data
 type VideoDetails = {
@@ -21,6 +24,15 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)  // the actaul file object
   const [videoUrl, setVideoUrl] = useState<string | null>(null) // temporary url that <video> can read
   const [videoDetails, setVideoDetails] = useState<VideoDetails | null>(null) // metadata
+  const [showAllSegments, setShowAllSegments] = useState(false)
+
+  const plannedSegments = videoDetails
+    ? planSegments(videoDetails.durationSeconds, TARGET_SEGMENT_SECONDS)
+    : []
+
+  const visibleSegments = showAllSegments
+    ? plannedSegments
+    : plannedSegments.slice(0, 5)
 
   // prevent old urls from being retained 
   useEffect(() => {
@@ -37,6 +49,7 @@ function App() {
 
     setSelectedFile(file)
     setVideoDetails(null) // clear old 
+    setShowAllSegments(false)
     setVideoUrl(file ? URL.createObjectURL(file) : null)
   }
 
@@ -97,6 +110,34 @@ function App() {
               {videoDetails.width} × {videoDetails.height}
             </dd>
           </dl>
+        </section>
+      )}
+
+      {plannedSegments.length > 0 && (
+        <section>
+          <h2>Segment plan</h2>
+          <p>
+            {plannedSegments.length} segments, each up to{' '}
+            {TARGET_SEGMENT_SECONDS} seconds long
+          </p>
+
+          <ol>
+            {visibleSegments.map((segment) => (
+              <li key={segment.index}>
+                Segment {segment.index + 1}: {segment.startSeconds.toFixed(1)}–
+                {segment.endSeconds.toFixed(1)} seconds
+              </li>
+            ))}
+          </ol>
+
+          {plannedSegments.length > 5 && (
+            <button
+              type="button"
+              onClick={() => setShowAllSegments((current) => !current)}
+            >
+              {showAllSegments ? 'Show fewer segments' : 'Show all segments'}
+            </button>
+          )}
         </section>
       )}
     </main>
