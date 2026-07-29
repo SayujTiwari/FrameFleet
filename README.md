@@ -1,2 +1,2 @@
 # FrameFleet
-- Distribute video encoding across multiple computers to produce exports faster.
+- Distribute video encoding across a fleet of computers to produce exports faster.

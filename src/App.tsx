@@ -1,121 +1,105 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
+import {
+  type ChangeEvent,
+  type SyntheticEvent,
+  useEffect,
+  useState,
+} from 'react'
 import './App.css'
 
+// video data
+type VideoDetails = {
+  name: string
+  type: string
+  sizeMb: number
+  durationSeconds: number
+  width: number
+  height: number
+}
+
+// main func
 function App() {
-  const [count, setCount] = useState(0)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)  // the actaul file object
+  const [videoUrl, setVideoUrl] = useState<string | null>(null) // temporary url that <video> can read
+  const [videoDetails, setVideoDetails] = useState<VideoDetails | null>(null) // metadata
+
+  // prevent old urls from being retained 
+  useEffect(() => {
+    return () => {
+      if (videoUrl) {
+        URL.revokeObjectURL(videoUrl)  // no longer needed 
+      }
+    }
+  }, [videoUrl])
+
+  // new file is selected
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null
+
+    setSelectedFile(file)
+    setVideoDetails(null) // clear old 
+    setVideoUrl(file ? URL.createObjectURL(file) : null)
+  }
+
+  // get the file details
+  function handleMetadataLoaded(event: SyntheticEvent<HTMLVideoElement>) {
+    if (!selectedFile) {
+      return
+    }
+
+    const video = event.currentTarget
+
+    setVideoDetails({
+      name: selectedFile.name,
+      type: selectedFile.type,
+      sizeMb: selectedFile.size / (1024 * 1024),
+      durationSeconds: video.duration,
+      width: video.videoWidth,
+      height: video.videoHeight,
+    })
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <main>
+      <p>Faster way of video encoding</p>
+      <h1>FrameFleet</h1>
+      <p>Choose a video to inspect before creating an encoding job.</p>
+      
+      <input type="file" accept="video/*" onChange={handleFileChange} />
 
-      <div className="ticks"></div>
+      {videoUrl && (
+        <video
+          src={videoUrl}
+          controls
+          preload="metadata"
+          onLoadedMetadata={handleMetadataLoaded}
+        />
+      )}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+      {videoDetails && (
+        <section>
+          <h2>Video details</h2>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+          <dl>
+            <dt>Filename</dt>
+            <dd>{videoDetails.name}</dd>
+
+            <dt>File type</dt>
+            <dd>{videoDetails.type}</dd>
+
+            <dt>File size</dt>
+            <dd>{videoDetails.sizeMb.toFixed(2)} MB</dd>
+
+            <dt>Duration</dt>
+            <dd>{videoDetails.durationSeconds.toFixed(1)} seconds</dd>
+
+            <dt>Resolution</dt>
+            <dd>
+              {videoDetails.width} × {videoDetails.height}
+            </dd>
+          </dl>
+        </section>
+      )}
+    </main>
   )
 }
 
