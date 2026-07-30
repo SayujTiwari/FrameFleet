@@ -1,12 +1,35 @@
+from dataclasses import dataclass
 from math import ceil
-from uuid import uuid4
+import os
+from pathlib import Path
+from shutil import rmtree
+from threading import Lock
+from typing import Annotated
+from uuid import UUID, uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.models import CreateEncodingJobRequest, EncodingJobResponse
+from backend.models import EncodingJobResponse
 
 app = FastAPI(title="FrameFleet API")
+
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+DEFAULT_UPLOAD_ROOT = Path(__file__).resolve().parent / "uploads"
+UPLOAD_ROOT = Path(
+    os.environ.get("FRAMEFLEET_UPLOAD_ROOT", str(DEFAULT_UPLOAD_ROOT))
+)
+
+
+@dataclass(frozen=True)
+class StoredJob:
+    response: EncodingJobResponse
+    source_path: Path
+
+
+jobs: dict[UUID, StoredJob] = {}
+jobs_lock = Lock()
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,16 +44,84 @@ def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def save_upload(upload: UploadFile, job_directory: Path) -> tuple[Path, int]:
+    source_path = job_directory / "source"
+    total_bytes = 0
+
+    try:
+        job_directory.mkdir(parents=True, exist_ok=False)
+
+        with source_path.open("xb") as destination:
+            while chunk := upload.file.read(UPLOAD_CHUNK_BYTES):
+                total_bytes += len(chunk)
+
+                if total_bytes > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Video exceeds the 2 GiB upload limit",
+                    )
+
+                destination.write(chunk)
+
+        if total_bytes == 0:
+            raise HTTPException(status_code=400, detail="Video is empty")
+
+        return source_path, total_bytes
+    except HTTPException:
+        rmtree(job_directory, ignore_errors=True)
+        raise
+    except OSError as error:
+        rmtree(job_directory, ignore_errors=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Could not store the uploaded video",
+        ) from error
+    finally:
+        upload.file.close()
+
+
 @app.post("/jobs", status_code=201)
 def create_encoding_job(
-    request: CreateEncodingJobRequest,
+    video: Annotated[UploadFile, File()],
+    duration_seconds: Annotated[float, Form(gt=0)],
+    target_segment_seconds: Annotated[float, Form(gt=0)] = 30,
 ) -> EncodingJobResponse:
-    segment_count = ceil(
-        request.duration_seconds / request.target_segment_seconds
+    if not video.filename:
+        raise HTTPException(status_code=400, detail="Video must have a filename")
+
+    if not video.content_type or not video.content_type.startswith("video/"):
+        raise HTTPException(status_code=415, detail="File must be a video")
+
+    job_id = uuid4()
+    source_path, file_size_bytes = save_upload(
+        video,
+        UPLOAD_ROOT / str(job_id),
+    )
+    job = EncodingJobResponse(
+        job_id=job_id,
+        status="uploaded",
+        file_name=video.filename,
+        file_size_bytes=file_size_bytes,
+        duration_seconds=duration_seconds,
+        target_segment_seconds=target_segment_seconds,
+        segment_count=ceil(duration_seconds / target_segment_seconds),
     )
 
-    return EncodingJobResponse(
-        job_id=uuid4(),
-        status="planned",
-        segment_count=segment_count,
-    )
+    with jobs_lock:
+        jobs[job.job_id] = StoredJob(
+            response=job,
+            source_path=source_path,
+        )
+
+    return job
+
+
+@app.get("/jobs/{job_id}")
+def get_encoding_job(job_id: UUID) -> EncodingJobResponse:
+    with jobs_lock:
+        stored_job = jobs.get(job_id)
+
+    if stored_job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return stored_job.response

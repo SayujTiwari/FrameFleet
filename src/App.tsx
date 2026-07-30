@@ -5,6 +5,10 @@ import {
   useState,
 } from 'react'
 import './App.css'
+import {
+  createEncodingJob,
+  type EncodingJob,
+} from './api/createEncodingJob'
 import { planSegments } from './video/planSegments'
 
 const TARGET_SEGMENT_SECONDS = 30
@@ -19,12 +23,6 @@ type VideoDetails = {
   height: number
 }
 
-type EncodingJob = {
-  job_id: string
-  status: 'planned'
-  segment_count: number
-}
-
 // main func
 function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)  // the actaul file object
@@ -32,7 +30,8 @@ function App() {
   const [videoDetails, setVideoDetails] = useState<VideoDetails | null>(null) // metadata
   const [showAllSegments, setShowAllSegments] = useState(false)
   const [encodingJob, setEncodingJob] = useState<EncodingJob | null>(null)
-  const [isPlanningJob, setIsPlanningJob] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
   const [jobError, setJobError] = useState<string | null>(null)
 
   const plannedSegments = videoDetails
@@ -60,6 +59,7 @@ function App() {
     setVideoDetails(null) // clear old 
     setShowAllSegments(false)
     setEncodingJob(null)
+    setUploadProgress(0)
     setJobError(null)
     setVideoUrl(file ? URL.createObjectURL(file) : null)
   }
@@ -83,37 +83,30 @@ function App() {
   }
 
   async function handleCreateJob() {
-    if (!videoDetails) {
+    if (!selectedFile || !videoDetails) {
       return
     }
 
-    setIsPlanningJob(true)
+    setIsUploading(true)
+    setUploadProgress(0)
     setEncodingJob(null)
     setJobError(null)
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          file_name: videoDetails.name,
-          duration_seconds: videoDetails.durationSeconds,
-          target_segment_seconds: TARGET_SEGMENT_SECONDS,
-        }),
+      const job = await createEncodingJob({
+        video: selectedFile,
+        durationSeconds: videoDetails.durationSeconds,
+        targetSegmentSeconds: TARGET_SEGMENT_SECONDS,
+        onProgress: setUploadProgress,
       })
 
-      if (!response.ok) {
-        throw new Error(`Backend returned status ${response.status}`)
-      }
-
-      const job: EncodingJob = await response.json()
       setEncodingJob(job)
     } catch (error) {
       setJobError(
         error instanceof Error ? error.message : 'Could not create the job',
       )
     } finally {
-      setIsPlanningJob(false)
+      setIsUploading(false)
     }
   }
 
@@ -123,7 +116,12 @@ function App() {
       <h1>FrameFleet</h1>
       <p>Choose a video to inspect before creating an encoding job.</p>
       
-      <input type="file" accept="video/*" onChange={handleFileChange} />
+      <input
+        type="file"
+        accept="video/*"
+        disabled={isUploading}
+        onChange={handleFileChange}
+      />
 
       {videoUrl && (
         <video
@@ -187,11 +185,15 @@ function App() {
 
           <button
             type="button"
-            disabled={isPlanningJob}
+            disabled={isUploading}
             onClick={handleCreateJob}
           >
-            {isPlanningJob ? 'Planning job...' : 'Create encoding job'}
+            {isUploading
+              ? `Uploading ${uploadProgress}%`
+              : 'Upload and create job'}
           </button>
+
+          {isUploading && <progress value={uploadProgress} max="100" />}
 
           {jobError && <p role="alert">{jobError}</p>}
 
