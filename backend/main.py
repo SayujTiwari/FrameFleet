@@ -11,6 +11,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.models import EncodingJobResponse
+from backend.probe import MediaProbeError, probe_video
 
 app = FastAPI(title="FrameFleet API")
 
@@ -83,7 +84,6 @@ def save_upload(upload: UploadFile, job_directory: Path) -> tuple[Path, int]:
 @app.post("/jobs", status_code=201)
 def create_encoding_job(
     video: Annotated[UploadFile, File()],
-    duration_seconds: Annotated[float, Form(gt=0)],
     target_segment_seconds: Annotated[float, Form(gt=0)] = 30,
 ) -> EncodingJobResponse:
     if not video.filename:
@@ -97,14 +97,26 @@ def create_encoding_job(
         video,
         UPLOAD_ROOT / str(job_id),
     )
+
+    try:
+        probe = probe_video(source_path)
+    except MediaProbeError as error:
+        rmtree(source_path.parent, ignore_errors=True)
+        raise HTTPException(status_code=415, detail=str(error)) from error
+
     job = EncodingJobResponse(
         job_id=job_id,
-        status="uploaded",
+        status="ready",
         file_name=video.filename,
         file_size_bytes=file_size_bytes,
-        duration_seconds=duration_seconds,
+        duration_seconds=probe.duration_seconds,
         target_segment_seconds=target_segment_seconds,
-        segment_count=ceil(duration_seconds / target_segment_seconds),
+        segment_count=ceil(probe.duration_seconds / target_segment_seconds),
+        width=probe.width,
+        height=probe.height,
+        video_codec=probe.video_codec,
+        format_name=probe.format_name,
+        has_audio=probe.has_audio,
     )
 
     with jobs_lock:

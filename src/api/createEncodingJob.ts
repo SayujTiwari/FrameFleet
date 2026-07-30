@@ -1,29 +1,31 @@
 export type EncodingJob = {
   job_id: string
-  status: 'uploaded'
+  status: 'ready'
   file_name: string
   file_size_bytes: number
   duration_seconds: number
   target_segment_seconds: number
   segment_count: number
+  width: number
+  height: number
+  video_codec: string
+  format_name: string
+  has_audio: boolean
 }
 
 type CreateEncodingJobOptions = {
   video: File
-  durationSeconds: number
   targetSegmentSeconds: number
   onProgress: (percentage: number) => void
 }
 
 export function createEncodingJob({
   video,
-  durationSeconds,
   targetSegmentSeconds,
   onProgress,
 }: CreateEncodingJobOptions): Promise<EncodingJob> {
   const formData = new FormData()
   formData.append('video', video)
-  formData.append('duration_seconds', durationSeconds.toString())
   formData.append('target_segment_seconds', targetSegmentSeconds.toString())
 
   return new Promise((resolve, reject) => {

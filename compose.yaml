@@ -1,0 +1,34 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command:
+      - uvicorn
+      - backend.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+    environment:
+      FRAMEFLEET_UPLOAD_ROOT: /data/uploads
+    ports:
+      - "${FRAMEFLEET_API_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app/backend:ro
+      - framefleet_uploads:/data/uploads
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >
+          import urllib.request;
+          urllib.request.urlopen("http://127.0.0.1:8000/health")
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  framefleet_uploads:

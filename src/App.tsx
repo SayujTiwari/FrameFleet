@@ -95,7 +95,6 @@ function App() {
     try {
       const job = await createEncodingJob({
         video: selectedFile,
-        durationSeconds: videoDetails.durationSeconds,
         targetSegmentSeconds: TARGET_SEGMENT_SECONDS,
         onProgress: setUploadProgress,
       })
@@ -198,10 +197,32 @@ function App() {
           {jobError && <p role="alert">{jobError}</p>}
 
           {encodingJob && (
-            <p>
-              Job {encodingJob.job_id} is {encodingJob.status} with{' '}
-              {encodingJob.segment_count} segments.
-            </p>
+            <section>
+              <h2>Backend verification</h2>
+              <p>
+                Job {encodingJob.job_id} is {encodingJob.status} with{' '}
+                {encodingJob.segment_count} segments.
+              </p>
+
+              <dl>
+                <dt>Verified duration</dt>
+                <dd>{encodingJob.duration_seconds.toFixed(1)} seconds</dd>
+
+                <dt>Verified resolution</dt>
+                <dd>
+                  {encodingJob.width} × {encodingJob.height}
+                </dd>
+
+                <dt>Video codec</dt>
+                <dd>{encodingJob.video_codec}</dd>
+
+                <dt>Container format</dt>
+                <dd>{encodingJob.format_name}</dd>
+
+                <dt>Audio stream</dt>
+                <dd>{encodingJob.has_audio ? 'Present' : 'Not present'}</dd>
+              </dl>
+            </section>
           )}
         </section>
       )}
