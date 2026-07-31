@@ -4,13 +4,14 @@ Distribute video encoding across a fleet of computers to produce exports faster.
 
 ## Local development
 
-The React frontend runs on the host machine. FastAPI and FFmpeg run together in
-the backend container, while PostgreSQL stores durable encoding job records.
+The React frontend runs on the host machine. FastAPI accepts uploads, a separate
+worker uses FFmpeg to segment videos in the background, and PostgreSQL stores
+durable encoding job records.
 
-Start the backend:
+Start the backend, worker, and database:
 
 ```bash
-docker compose up --build backend
+docker compose up --build
 ```
 
 In another terminal, start the frontend:

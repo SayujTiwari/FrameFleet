@@ -50,6 +50,24 @@ services:
       timeout: 3s
       retries: 5
 
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command:
+      - python
+      - -m
+      - backend.worker
+    environment:
+      FRAMEFLEET_DATABASE_URL: postgresql+psycopg://framefleet:framefleet@database:5432/framefleet
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./backend:/app/backend:ro
+      - framefleet_uploads:/data/uploads
+
 volumes:
   framefleet_database:
   framefleet_uploads:

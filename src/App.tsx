@@ -7,6 +7,7 @@ import {
 import './App.css'
 import {
   createEncodingJob,
+  getEncodingJob,
   type EncodingJob,
 } from './api/createEncodingJob'
 import { planSegments } from './video/planSegments'
@@ -33,6 +34,8 @@ function App() {
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [jobError, setJobError] = useState<string | null>(null)
+  const encodingJobId = encodingJob?.job_id
+  const encodingJobStatus = encodingJob?.status
 
   const plannedSegments = videoDetails
     ? planSegments(videoDetails.durationSeconds, TARGET_SEGMENT_SECONDS)
@@ -50,6 +53,38 @@ function App() {
       }
     }
   }, [videoUrl])
+
+  useEffect(() => {
+    if (
+      !encodingJobId ||
+      encodingJobStatus === 'completed' ||
+      encodingJobStatus === 'failed'
+    ) {
+      return
+    }
+
+    let cancelled = false
+    const intervalId = window.setInterval(async () => {
+      try {
+        const updatedJob = await getEncodingJob(encodingJobId)  // req to backend
+
+        // if still going update components
+        if (!cancelled) {
+          setEncodingJob(updatedJob)
+          setJobError(null)
+        }
+      } catch {
+        if (!cancelled) {
+          setJobError('Could not refresh the job status')
+        }
+      }
+    }, 1000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [encodingJobId, encodingJobStatus])
 
   // new file is selected
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -198,11 +233,25 @@ function App() {
 
           {encodingJob && (
             <section>
-              <h2>Backend verification</h2>
+              <h2>Encoding job</h2>
               <p>
-                Job {encodingJob.job_id} is {encodingJob.status} with{' '}
-                {encodingJob.segment_count} segments.
+                Job {encodingJob.job_id} is {encodingJob.status}.{' '}
+                {encodingJob.completed_segments} of {encodingJob.segment_count}{' '}
+                segments are complete.
               </p>
+
+              {(encodingJob.status === 'ready' ||
+                encodingJob.status === 'processing') && (
+                <p>The background worker is preparing the video segments…</p>
+              )}
+
+              {encodingJob.status === 'completed' && (
+                <p>Every video segment was successfully encoded.</p>
+              )}
+
+              {encodingJob.status === 'failed' && (
+                <p role="alert">The worker could not segment this video.</p>
+              )}
 
               <dl>
                 <dt>Verified duration</dt>

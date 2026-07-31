@@ -8,13 +8,14 @@ from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.database import Base, engine, get_database_session
 from backend.models import EncodingJobResponse
 from backend.probe import MediaProbeError, probe_video
-from backend.tables import EncodingJobRecord
+from backend.tables import EncodingJobRecord, EncodingSegmentRecord
 
 
 @asynccontextmanager
@@ -105,6 +106,7 @@ def create_encoding_job(
         rmtree(source_path.parent, ignore_errors=True)
         raise HTTPException(status_code=415, detail=str(error)) from error
 
+    segment_count = ceil(probe.duration_seconds / target_segment_seconds)
     job = EncodingJobRecord(
         job_id=job_id,
         status="ready",
@@ -113,7 +115,7 @@ def create_encoding_job(
         file_size_bytes=file_size_bytes,
         duration_seconds=probe.duration_seconds,
         target_segment_seconds=target_segment_seconds,
-        segment_count=ceil(probe.duration_seconds / target_segment_seconds),
+        segment_count=segment_count,
         width=probe.width,
         height=probe.height,
         video_codec=probe.video_codec,
@@ -123,6 +125,20 @@ def create_encoding_job(
 
     try:
         session.add(job)
+        session.add_all(
+            EncodingSegmentRecord(
+                job_id=job_id,
+                segment_index=index,
+                status="pending",
+                start_seconds=index * target_segment_seconds,
+                end_seconds=min(
+                    (index + 1) * target_segment_seconds,
+                    probe.duration_seconds,
+                ),
+                output_path=None,
+            )
+            for index in range(segment_count)
+        )
         session.commit()
     except SQLAlchemyError as error:
         session.rollback()
@@ -145,4 +161,15 @@ def get_encoding_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    return EncodingJobResponse.model_validate(job)
+    completed_segments = session.scalar(
+        select(func.count())
+        .select_from(EncodingSegmentRecord)
+        .where(
+            EncodingSegmentRecord.job_id == job_id,
+            EncodingSegmentRecord.status == "completed",
+        )
+    )
+
+    return EncodingJobResponse.model_validate(job).model_copy(
+        update={"completed_segments": completed_segments or 0}
+    )
