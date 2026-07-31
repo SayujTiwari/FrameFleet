@@ -1,19 +1,29 @@
-from dataclasses import dataclass
+from contextlib import asynccontextmanager
 from math import ceil
 import os
 from pathlib import Path
 from shutil import rmtree
-from threading import Lock
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
+from backend.database import Base, engine, get_database_session
 from backend.models import EncodingJobResponse
 from backend.probe import MediaProbeError, probe_video
+from backend.tables import EncodingJobRecord
 
-app = FastAPI(title="FrameFleet API")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    yield
+
+
+app = FastAPI(title="FrameFleet API", lifespan=lifespan)
 
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
@@ -21,16 +31,6 @@ DEFAULT_UPLOAD_ROOT = Path(__file__).resolve().parent / "uploads"
 UPLOAD_ROOT = Path(
     os.environ.get("FRAMEFLEET_UPLOAD_ROOT", str(DEFAULT_UPLOAD_ROOT))
 )
-
-
-@dataclass(frozen=True)
-class StoredJob:
-    response: EncodingJobResponse
-    source_path: Path
-
-
-jobs: dict[UUID, StoredJob] = {}
-jobs_lock = Lock()
 
 app.add_middleware(
     CORSMiddleware,
@@ -85,6 +85,7 @@ def save_upload(upload: UploadFile, job_directory: Path) -> tuple[Path, int]:
 def create_encoding_job(
     video: Annotated[UploadFile, File()],
     target_segment_seconds: Annotated[float, Form(gt=0)] = 30,
+    session: Session = Depends(get_database_session),
 ) -> EncodingJobResponse:
     if not video.filename:
         raise HTTPException(status_code=400, detail="Video must have a filename")
@@ -104,10 +105,11 @@ def create_encoding_job(
         rmtree(source_path.parent, ignore_errors=True)
         raise HTTPException(status_code=415, detail=str(error)) from error
 
-    job = EncodingJobResponse(
+    job = EncodingJobRecord(
         job_id=job_id,
         status="ready",
         file_name=video.filename,
+        source_path=str(source_path),
         file_size_bytes=file_size_bytes,
         duration_seconds=probe.duration_seconds,
         target_segment_seconds=target_segment_seconds,
@@ -119,21 +121,28 @@ def create_encoding_job(
         has_audio=probe.has_audio,
     )
 
-    with jobs_lock:
-        jobs[job.job_id] = StoredJob(
-            response=job,
-            source_path=source_path,
-        )
+    try:
+        session.add(job)
+        session.commit()
+    except SQLAlchemyError as error:
+        session.rollback()
+        rmtree(source_path.parent, ignore_errors=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Could not create the encoding job",
+        ) from error
 
-    return job
+    return EncodingJobResponse.model_validate(job)
 
 
 @app.get("/jobs/{job_id}")
-def get_encoding_job(job_id: UUID) -> EncodingJobResponse:
-    with jobs_lock:
-        stored_job = jobs.get(job_id)
+def get_encoding_job(
+    job_id: UUID,
+    session: Session = Depends(get_database_session),
+) -> EncodingJobResponse:
+    job = session.get(EncodingJobRecord, job_id)
 
-    if stored_job is None:
+    if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    return stored_job.response
+    return EncodingJobResponse.model_validate(job)

@@ -1,10 +1,12 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class EncodingJobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     job_id: UUID
     status: Literal["ready"]
     file_name: str

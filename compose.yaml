@@ -1,4 +1,20 @@
 services:
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: framefleet
+      POSTGRES_PASSWORD: framefleet
+      POSTGRES_USER: framefleet
+    volumes:
+      - framefleet_database:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U framefleet -d framefleet
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   backend:
     build:
       context: .
@@ -12,7 +28,11 @@ services:
       - "8000"
       - --reload
     environment:
+      FRAMEFLEET_DATABASE_URL: postgresql+psycopg://framefleet:framefleet@database:5432/framefleet
       FRAMEFLEET_UPLOAD_ROOT: /data/uploads
+    depends_on:
+      database:
+        condition: service_healthy
     ports:
       - "${FRAMEFLEET_API_PORT:-8000}:8000"
     volumes:
@@ -31,4 +51,5 @@ services:
       retries: 5
 
 volumes:
+  framefleet_database:
   framefleet_uploads:
