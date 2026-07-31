@@ -5,8 +5,11 @@ Distribute video encoding across a fleet of computers to produce exports faster.
 ## Local development
 
 The React frontend runs on the host machine. FastAPI accepts uploads, a separate
-worker uses FFmpeg to segment videos in the background, and PostgreSQL stores
+worker uses FFmpeg to encode video segments in the background, and PostgreSQL stores
 durable encoding job records.
+
+Each segment is encoded independently. Once all segments finish, one worker
+assembles them into a final MP4 that can be downloaded from the frontend.
 
 Start the backend, worker, and database:
 

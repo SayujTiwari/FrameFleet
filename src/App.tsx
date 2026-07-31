@@ -8,6 +8,7 @@ import './App.css'
 import {
   createEncodingJob,
   getEncodingJob,
+  getEncodingJobDownloadUrl,
   type EncodingJob,
 } from './api/createEncodingJob'
 import { planSegments } from './video/planSegments'
@@ -242,15 +243,24 @@ function App() {
 
               {(encodingJob.status === 'ready' ||
                 encodingJob.status === 'processing') && (
-                <p>The background worker is preparing the video segments…</p>
+                <p>The background workers are encoding the video segments…</p>
+              )}
+
+              {encodingJob.status === 'assembling' && (
+                <p>The encoded segments are being assembled into one video…</p>
               )}
 
               {encodingJob.status === 'completed' && (
-                <p>Every video segment was successfully encoded.</p>
+                <p>
+                  Your export is ready.{' '}
+                  <a href={getEncodingJobDownloadUrl(encodingJob.job_id)}>
+                    Download video
+                  </a>
+                </p>
               )}
 
               {encodingJob.status === 'failed' && (
-                <p role="alert">The worker could not segment this video.</p>
+                <p role="alert">The video export could not be completed.</p>
               )}
 
               <dl>

@@ -118,7 +118,7 @@ def finish_segment(
     segment: ClaimedSegment,
     status: str,
     output_path: Path | None = None,
-) -> None:
+) -> bool:
 
     # look up segment
     with SessionLocal() as session:
@@ -133,7 +133,7 @@ def finish_segment(
         )
 
         if record is None or job is None:
-            return
+            return False
 
         record.status = status
         record.output_path = str(output_path) if output_path else None
@@ -158,10 +158,101 @@ def finish_segment(
         if failed_count:
             job.status = "failed"
         elif completed_count == job.segment_count:
-            job.status = "completed"
+            job.status = "assembling"
         else:
             job.status = "processing"
 
+        session.commit()
+        return job.status == "assembling"
+
+
+#
+def assemble_job(job_id: UUID) -> Path:
+    # load job and segments
+    with SessionLocal() as session:
+        job = session.get(EncodingJobRecord, job_id)
+        segment_paths = session.scalars(
+            select(EncodingSegmentRecord.output_path)
+            .where(
+                EncodingSegmentRecord.job_id == job_id,
+                EncodingSegmentRecord.status == "completed",
+            )
+            .order_by(EncodingSegmentRecord.segment_index)
+        ).all()
+
+    if job is None or len(segment_paths) != job.segment_count:
+        raise EncodingError("Not all encoded segments are available")
+
+    job_directory = Path(job.source_path).parent
+    manifest_path = job_directory / "segments.txt"
+    output_path = job_directory / "output.mp4"
+    temporary_path = job_directory / "output.tmp.mp4"
+
+    # convert them into path objects
+    paths = [Path(path) for path in segment_paths if path is not None]
+
+    if len(paths) != job.segment_count or not all(path.is_file() for path in paths):
+        raise EncodingError("An encoded segment file is missing")
+
+    # to pass into FFmpeg
+    manifest_path.write_text(
+        "".join(f"file '{path}'\n" for path in paths),
+        encoding="utf-8",
+    )
+    temporary_path.unlink(missing_ok=True)
+
+    command = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(manifest_path),
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        "-y",
+        str(temporary_path),
+    ]
+
+    # run FFmpeg
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError as error:
+        raise EncodingError("FFmpeg could not assemble the export") from error
+    finally:
+        manifest_path.unlink(missing_ok=True)
+
+    if result.returncode != 0 or not temporary_path.exists():
+        temporary_path.unlink(missing_ok=True)
+        message = result.stderr.strip() or "FFmpeg produced no final export"
+        raise EncodingError(message)
+
+    temporary_path.replace(output_path)  # move into place
+    return output_path
+
+
+def finish_assembly(job_id: UUID, status: str) -> None:
+    with SessionLocal() as session:
+        job = session.scalar(
+            select(EncodingJobRecord)
+            .where(EncodingJobRecord.job_id == job_id)
+            .with_for_update()
+        )
+
+        if job is None:
+            return
+
+        job.status = status
         session.commit()
 
 
@@ -182,8 +273,22 @@ def process_next_segment() -> bool:
         finish_segment(segment, "failed")
         return True
 
-    finish_segment(segment, "completed", output_path)
+    should_assemble = finish_segment(segment, "completed", output_path)
     print(f"Segment {label} completed", flush=True)
+
+    if should_assemble:
+        print(f"Assembling job {segment.job_id}", flush=True)
+
+        try:
+            final_path = assemble_job(segment.job_id)
+        except EncodingError as error:
+            print(f"Job {segment.job_id} assembly failed: {error}", flush=True)
+            finish_assembly(segment.job_id, "failed")
+            return True
+
+        finish_assembly(segment.job_id, "completed")
+        print(f"Job {segment.job_id} completed at {final_path}", flush=True)
+
     return True
 
 

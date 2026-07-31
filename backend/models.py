@@ -4,11 +4,18 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 
+# data model sent to front
 class EncodingJobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     job_id: UUID
-    status: Literal["ready", "processing", "completed", "failed"]
+    status: Literal[
+        "ready",
+        "processing",
+        "assembling",
+        "completed",
+        "failed",
+    ]
     file_name: str
     file_size_bytes: int
     duration_seconds: float

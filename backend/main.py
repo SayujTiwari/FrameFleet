@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -172,4 +173,30 @@ def get_encoding_job(
 
     return EncodingJobResponse.model_validate(job).model_copy(
         update={"completed_segments": completed_segments or 0}
+    )
+
+
+@app.get("/jobs/{job_id}/download", response_class=FileResponse)
+def download_encoding_job(
+    job_id: UUID,
+    session: Session = Depends(get_database_session),
+) -> FileResponse:
+    job = session.get(EncodingJobRecord, job_id)
+
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status != "completed":
+        raise HTTPException(status_code=409, detail="Export is not ready")
+
+    output_path = Path(job.source_path).parent / "output.mp4"
+
+    if not output_path.is_file():
+        raise HTTPException(status_code=404, detail="Export file not found")
+
+    original_stem = Path(job.file_name).stem or "video"
+    return FileResponse(
+        output_path,
+        media_type="video/mp4",
+        filename=f"{original_stem}-framefleet.mp4",
     )

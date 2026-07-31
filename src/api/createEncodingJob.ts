@@ -1,6 +1,6 @@
 export type EncodingJob = {
   job_id: string
-  status: 'ready' | 'processing' | 'completed' | 'failed'
+  status: 'ready' | 'processing' | 'assembling' | 'completed' | 'failed'
   file_name: string
   file_size_bytes: number
   duration_seconds: number
@@ -29,6 +29,10 @@ export async function getEncodingJob(jobId: string): Promise<EncodingJob> {
   }
 
   return body as EncodingJob
+}
+
+export function getEncodingJobDownloadUrl(jobId: string): string {
+  return `${API_BASE_URL}/jobs/${jobId}/download`
 }
 
 type CreateEncodingJobOptions = {
