@@ -16,9 +16,10 @@ from sqlalchemy.sql import func
 
 from backend.database import Base
 
-# db table structures
+# models representing SQL database tables
 
 
+# each job deetails
 class EncodingJobRecord(Base):
     __tablename__ = "encoding_jobs"
 
@@ -41,6 +42,7 @@ class EncodingJobRecord(Base):
     )
 
 
+# each segment details
 class EncodingSegmentRecord(Base):
     __tablename__ = "encoding_segments"
 
@@ -54,3 +56,19 @@ class EncodingSegmentRecord(Base):
     start_seconds: Mapped[float] = mapped_column(Float)
     end_seconds: Mapped[float] = mapped_column(Float)
     output_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+# # Per-job encoding and export settings
+class EncodingSettingsRecord(Base):
+    __tablename__ = "encoding_settings"
+
+    job_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("encoding_jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    resolution: Mapped[str] = mapped_column(String(32))
+    output_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quality: Mapped[str] = mapped_column(String(32))
+    video_crf: Mapped[int] = mapped_column(Integer)
+    encoding_preset: Mapped[str] = mapped_column(String(32))

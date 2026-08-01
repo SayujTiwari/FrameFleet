@@ -3,7 +3,7 @@ from math import ceil
 import os
 from pathlib import Path
 from shutil import rmtree
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
@@ -14,9 +14,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.database import Base, engine, get_database_session
-from backend.models import EncodingJobResponse
+from backend.encoding_profiles import ENCODING_PROFILES, OUTPUT_HEIGHTS
+from backend.models import EncodingJobResponse, ExportSettingsResponse
 from backend.probe import MediaProbeError, probe_video
-from backend.tables import EncodingJobRecord, EncodingSegmentRecord
+from backend.tables import (
+    EncodingJobRecord,
+    EncodingSegmentRecord,
+    EncodingSettingsRecord,
+)
 
 
 @asynccontextmanager
@@ -30,9 +35,7 @@ app = FastAPI(title="FrameFleet API", lifespan=lifespan)
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_UPLOAD_ROOT = Path(__file__).resolve().parent / "uploads"
-UPLOAD_ROOT = Path(
-    os.environ.get("FRAMEFLEET_UPLOAD_ROOT", str(DEFAULT_UPLOAD_ROOT))
-)
+UPLOAD_ROOT = Path(os.environ.get("FRAMEFLEET_UPLOAD_ROOT", str(DEFAULT_UPLOAD_ROOT)))
 
 app.add_middleware(
     CORSMiddleware,
@@ -83,10 +86,46 @@ def save_upload(upload: UploadFile, job_directory: Path) -> tuple[Path, int]:
         upload.file.close()
 
 
+# get the nessacary info (helper)
+def build_job_response(
+    session: Session,
+    job: EncodingJobRecord,
+) -> EncodingJobResponse:
+    completed_segments = session.scalar(
+        select(func.count())
+        .select_from(EncodingSegmentRecord)
+        .where(
+            EncodingSegmentRecord.job_id == job.job_id,
+            EncodingSegmentRecord.status == "completed",
+        )
+    )
+    settings = session.get(EncodingSettingsRecord, job.job_id)
+
+    return EncodingJobResponse.model_validate(job).model_copy(
+        update={
+            "completed_segments": completed_segments or 0,
+            "export_settings": (
+                ExportSettingsResponse.model_validate(settings)
+                if settings is not None
+                else None
+            ),
+        }
+    )
+
+
 @app.post("/jobs", status_code=201)
 def create_encoding_job(
     video: Annotated[UploadFile, File()],
     target_segment_seconds: Annotated[float, Form(gt=0)] = 30,
+    # quality choices
+    output_resolution: Annotated[
+        Literal["original", "1080p", "720p", "480p"],
+        Form(),
+    ] = "original",
+    quality: Annotated[
+        Literal["high", "balanced", "compact"],
+        Form(),
+    ] = "balanced",
     session: Session = Depends(get_database_session),
 ) -> EncodingJobResponse:
     if not video.filename:
@@ -108,6 +147,17 @@ def create_encoding_job(
         raise HTTPException(status_code=415, detail=str(error)) from error
 
     segment_count = ceil(probe.duration_seconds / target_segment_seconds)
+
+    # video format choices
+    requested_height = OUTPUT_HEIGHTS[output_resolution]
+    output_height = (
+        min(requested_height, probe.height) if requested_height is not None else None
+    )
+
+    if output_height is not None:
+        output_height -= output_height % 2
+
+    profile = ENCODING_PROFILES[quality]
     job = EncodingJobRecord(
         job_id=job_id,
         status="ready",
@@ -126,6 +176,16 @@ def create_encoding_job(
 
     try:
         session.add(job)
+        session.add(
+            EncodingSettingsRecord(
+                job_id=job_id,
+                resolution=output_resolution,
+                output_height=output_height,
+                quality=quality,
+                video_crf=profile.crf,
+                encoding_preset=profile.preset,
+            )
+        )
         session.add_all(
             EncodingSegmentRecord(
                 job_id=job_id,
@@ -149,7 +209,7 @@ def create_encoding_job(
             detail="Could not create the encoding job",
         ) from error
 
-    return EncodingJobResponse.model_validate(job)
+    return build_job_response(session, job)
 
 
 @app.get("/jobs/{job_id}")
@@ -162,18 +222,7 @@ def get_encoding_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    completed_segments = session.scalar(
-        select(func.count())
-        .select_from(EncodingSegmentRecord)
-        .where(
-            EncodingSegmentRecord.job_id == job_id,
-            EncodingSegmentRecord.status == "completed",
-        )
-    )
-
-    return EncodingJobResponse.model_validate(job).model_copy(
-        update={"completed_segments": completed_segments or 0}
-    )
+    return build_job_response(session, job)
 
 
 @app.get("/jobs/{job_id}/download", response_class=FileResponse)

@@ -10,6 +10,8 @@ durable encoding job records.
 
 Each segment is encoded independently. Once all segments finish, one worker
 assembles them into a final MP4 that can be downloaded from the frontend.
+Export resolution and quality settings are stored with the job so every worker
+uses identical FFmpeg parameters.
 
 Start the backend, worker, and database:
 

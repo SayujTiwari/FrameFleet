@@ -10,6 +10,8 @@ import {
   getEncodingJob,
   getEncodingJobDownloadUrl,
   type EncodingJob,
+  type OutputResolution,
+  type QualityProfile,
 } from './api/createEncodingJob'
 import { planSegments } from './video/planSegments'
 
@@ -35,6 +37,9 @@ function App() {
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [jobError, setJobError] = useState<string | null>(null)
+  const [outputResolution, setOutputResolution] =
+    useState<OutputResolution>('original')
+  const [quality, setQuality] = useState<QualityProfile>('balanced')
   const encodingJobId = encodingJob?.job_id
   const encodingJobStatus = encodingJob?.status
 
@@ -132,6 +137,8 @@ function App() {
       const job = await createEncodingJob({
         video: selectedFile,
         targetSegmentSeconds: TARGET_SEGMENT_SECONDS,
+        outputResolution,
+        quality,
         onProgress: setUploadProgress,
       })
 
@@ -194,6 +201,39 @@ function App() {
 
       {plannedSegments.length > 0 && (
         <section>
+          <fieldset disabled={isUploading}>
+            <legend>Export settings</legend>
+
+            <label>
+              Resolution
+              <select
+                value={outputResolution}
+                onChange={(event) =>
+                  setOutputResolution(event.target.value as OutputResolution)
+                }
+              >
+                <option value="original">Original</option>
+                <option value="1080p">1080p</option>
+                <option value="720p">720p</option>
+                <option value="480p">480p</option>
+              </select>
+            </label>
+
+            <label>
+              Quality
+              <select
+                value={quality}
+                onChange={(event) =>
+                  setQuality(event.target.value as QualityProfile)
+                }
+              >
+                <option value="high">High quality</option>
+                <option value="balanced">Balanced</option>
+                <option value="compact">Smaller file</option>
+              </select>
+            </label>
+          </fieldset>
+
           <h2>Segment plan</h2>
           <p>
             {plannedSegments.length} segments, each up to{' '}
@@ -264,6 +304,16 @@ function App() {
               )}
 
               <dl>
+                <dt>Output resolution</dt>
+                <dd>
+                  {encodingJob.export_settings?.output_height
+                    ? `${encodingJob.export_settings.output_height}p`
+                    : 'Original'}
+                </dd>
+
+                <dt>Quality</dt>
+                <dd>{encodingJob.export_settings?.quality ?? 'Balanced'}</dd>
+
                 <dt>Verified duration</dt>
                 <dd>{encodingJob.duration_seconds.toFixed(1)} seconds</dd>
 

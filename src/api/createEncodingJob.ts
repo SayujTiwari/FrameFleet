@@ -1,3 +1,6 @@
+export type OutputResolution = 'original' | '1080p' | '720p' | '480p'
+export type QualityProfile = 'high' | 'balanced' | 'compact'
+
 export type EncodingJob = {
   job_id: string
   status: 'ready' | 'processing' | 'assembling' | 'completed' | 'failed'
@@ -7,6 +10,11 @@ export type EncodingJob = {
   target_segment_seconds: number
   segment_count: number
   completed_segments: number
+  export_settings: {
+    resolution: OutputResolution
+    output_height: number | null
+    quality: QualityProfile
+  } | null
   width: number
   height: number
   video_codec: string
@@ -38,17 +46,23 @@ export function getEncodingJobDownloadUrl(jobId: string): string {
 type CreateEncodingJobOptions = {
   video: File
   targetSegmentSeconds: number
+  outputResolution: OutputResolution
+  quality: QualityProfile
   onProgress: (percentage: number) => void
 }
 
 export function createEncodingJob({
   video,
   targetSegmentSeconds,
+  outputResolution,
+  quality,
   onProgress,
 }: CreateEncodingJobOptions): Promise<EncodingJob> {
   const formData = new FormData()
   formData.append('video', video)
   formData.append('target_segment_seconds', targetSegmentSeconds.toString())
+  formData.append('output_resolution', outputResolution)
+  formData.append('quality', quality)
 
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest()

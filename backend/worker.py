@@ -8,7 +8,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.database import SessionLocal
-from backend.tables import EncodingJobRecord, EncodingSegmentRecord
+from backend.tables import (
+    EncodingJobRecord,
+    EncodingSegmentRecord,
+    EncodingSettingsRecord,
+)
 
 POLL_INTERVAL_SECONDS = 1
 
@@ -20,6 +24,9 @@ class ClaimedSegment:
     source_path: Path
     start_seconds: float
     end_seconds: float
+    output_height: int | None
+    video_crf: int
+    encoding_preset: str
 
 
 class EncodingError(Exception):
@@ -44,6 +51,7 @@ def claim_next_segment(session: Session) -> ClaimedSegment | None:
         return None
 
     job = session.get(EncodingJobRecord, segment.job_id)
+    settings = session.get(EncodingSettingsRecord, segment.job_id)
 
     if job is None:
         return None
@@ -59,6 +67,9 @@ def claim_next_segment(session: Session) -> ClaimedSegment | None:
         source_path=Path(job.source_path),
         start_seconds=segment.start_seconds,
         end_seconds=segment.end_seconds,
+        output_height=settings.output_height if settings else None,
+        video_crf=settings.video_crf if settings else 23,
+        encoding_preset=settings.encoding_preset if settings else "veryfast",
     )
 
 
@@ -82,14 +93,20 @@ def encode_segment(segment: ClaimedSegment) -> Path:
         str(segment.end_seconds - segment.start_seconds),
         "-map",
         "0:v:0",
-        "-map",
-        "0:a?",
+        "-vf",
+        (
+            f"scale=-2:{segment.output_height}"
+            if segment.output_height is not None
+            else "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+        ),
         "-c:v",
         "libx264",
+        "-crf",
+        str(segment.video_crf),
         "-preset",
-        "veryfast",
-        "-c:a",
-        "aac",
+        segment.encoding_preset,
+        "-pix_fmt",
+        "yuv420p",
         "-y",
         str(temporary_path),
     ]
@@ -211,8 +228,18 @@ def assemble_job(job_id: UUID) -> Path:
         "0",
         "-i",
         str(manifest_path),
-        "-c",
+        "-i",
+        str(job.source_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0?",
+        "-c:v",
         "copy",
+        "-c:a",
+        "aac",
+        "-t",
+        str(job.duration_seconds),
         "-movflags",
         "+faststart",
         "-y",
