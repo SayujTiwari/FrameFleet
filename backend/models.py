@@ -23,6 +23,7 @@ class EncodingJobResponse(BaseModel):
         "assembling",
         "completed",
         "failed",
+        "cancelled",
     ]
     file_name: str
     file_size_bytes: int

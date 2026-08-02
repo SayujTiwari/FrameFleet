@@ -6,6 +6,7 @@ import {
 } from 'react'
 import './App.css'
 import {
+  cancelEncodingJob,
   createEncodingJob,
   getEncodingJob,
   getEncodingJobDownloadUrl,
@@ -37,6 +38,7 @@ function App() {
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [jobError, setJobError] = useState<string | null>(null)
+  const [isCancelling, setIsCancelling] = useState(false)
   const [outputResolution, setOutputResolution] =
     useState<OutputResolution>('original')
   const [quality, setQuality] = useState<QualityProfile>('balanced')
@@ -63,8 +65,10 @@ function App() {
   useEffect(() => {
     if (
       !encodingJobId ||
+      isCancelling ||
       encodingJobStatus === 'completed' ||
-      encodingJobStatus === 'failed'
+      encodingJobStatus === 'failed' ||
+      encodingJobStatus === 'cancelled'
     ) {
       return
     }
@@ -90,7 +94,7 @@ function App() {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [encodingJobId, encodingJobStatus])
+  }, [encodingJobId, encodingJobStatus, isCancelling])
 
   // new file is selected
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -102,6 +106,7 @@ function App() {
     setEncodingJob(null)
     setUploadProgress(0)
     setJobError(null)
+    setIsCancelling(false)
     setVideoUrl(file ? URL.createObjectURL(file) : null)
   }
 
@@ -149,6 +154,26 @@ function App() {
       )
     } finally {
       setIsUploading(false)
+    }
+  }
+
+  async function handleCancelJob() {
+    if (!encodingJob) {
+      return
+    }
+
+    setIsCancelling(true)
+    setJobError(null)
+
+    try {
+      const cancelledJob = await cancelEncodingJob(encodingJob.job_id)
+      setEncodingJob(cancelledJob)
+    } catch (error) {
+      setJobError(
+        error instanceof Error ? error.message : 'Could not cancel the job',
+      )
+    } finally {
+      setIsCancelling(false)
     }
   }
 
@@ -289,7 +314,16 @@ function App() {
 
               {(encodingJob.status === 'ready' ||
                 encodingJob.status === 'processing') && (
-                <p>The background workers are encoding the video segments…</p>
+                <>
+                  <p>The background workers are encoding the video segments…</p>
+                  <button
+                    type="button"
+                    disabled={isCancelling}
+                    onClick={handleCancelJob}
+                  >
+                    {isCancelling ? 'Cancelling…' : 'Cancel export'}
+                  </button>
+                </>
               )}
 
               {encodingJob.status === 'assembling' && (
@@ -307,6 +341,10 @@ function App() {
 
               {encodingJob.status === 'failed' && (
                 <p role="alert">The video export could not be completed.</p>
+              )}
+
+              {encodingJob.status === 'cancelled' && (
+                <p>The video export was cancelled.</p>
               )}
 
               <dl>

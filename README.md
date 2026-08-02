@@ -14,6 +14,8 @@ Export resolution and quality settings are stored with the job so every worker
 uses identical FFmpeg parameters.
 Workers renew database leases while encoding. Expired work can be reclaimed,
 and fencing tokens prevent late workers from publishing stale output.
+Queued and active jobs can be cancelled; cancellation revokes worker leases so
+in-progress FFmpeg processes stop at their next heartbeat.
 
 Start the backend, worker, and database:
 

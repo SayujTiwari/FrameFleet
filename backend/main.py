@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -271,6 +271,57 @@ def get_encoding_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    return build_job_response(session, job)
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_encoding_job(
+    job_id: UUID,
+    session: Session = Depends(get_database_session),
+) -> EncodingJobResponse:
+    existing_job = session.get(EncodingJobRecord, job_id)
+
+    if existing_job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    executions = session.scalars(
+        select(SegmentExecutionRecord)
+        .where(SegmentExecutionRecord.job_id == job_id)
+        .with_for_update()
+    ).all()
+    job = session.scalar(
+        select(EncodingJobRecord)
+        .where(EncodingJobRecord.job_id == job_id)
+        .with_for_update()
+    )
+
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status == "cancelled":
+        return build_job_response(session, job)
+
+    if job.status in {"completed", "failed", "assembling"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A {job.status} job cannot be cancelled",
+        )
+
+    session.execute(
+        update(EncodingSegmentRecord)
+        .where(
+            EncodingSegmentRecord.job_id == job_id,
+            EncodingSegmentRecord.status.in_(["pending", "processing"]),
+        )
+        .values(status="cancelled")
+    )
+
+    for execution in executions:
+        execution.leased_by = None
+        execution.lease_expires_at = None
+
+    job.status = "cancelled"
+    session.commit()
     return build_job_response(session, job)
 
 

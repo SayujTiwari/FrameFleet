@@ -3,7 +3,13 @@ export type QualityProfile = 'high' | 'balanced' | 'compact'
 
 export type EncodingJob = {
   job_id: string
-  status: 'ready' | 'processing' | 'assembling' | 'completed' | 'failed'
+  status:
+    | 'ready'
+    | 'processing'
+    | 'assembling'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
   file_name: string
   file_size_bytes: number
   duration_seconds: number
@@ -27,6 +33,23 @@ const API_BASE_URL = 'http://127.0.0.1:8000'
 
 export async function getEncodingJob(jobId: string): Promise<EncodingJob> {
   const response = await fetch(`${API_BASE_URL}/jobs/${jobId}`)
+  const body = await response.json()
+
+  if (!response.ok) {
+    throw new Error(
+      typeof body.detail === 'string'
+        ? body.detail
+        : `Backend returned status ${response.status}`,
+    )
+  }
+
+  return body as EncodingJob
+}
+
+export async function cancelEncodingJob(jobId: string): Promise<EncodingJob> {
+  const response = await fetch(`${API_BASE_URL}/jobs/${jobId}/cancel`, {
+    method: 'POST',
+  })
   const body = await response.json()
 
   if (!response.ok) {

@@ -83,7 +83,9 @@ def claim_next_segment(session: Session) -> ClaimedSegment | None:
             EncodingJobRecord.job_id == EncodingSegmentRecord.job_id,
         )
         .where(
-            EncodingJobRecord.status.not_in(["failed", "completed", "assembling"]),
+            EncodingJobRecord.status.not_in(
+                ["failed", "completed", "assembling", "cancelled"]
+            ),
             or_(
                 EncodingSegmentRecord.status == "pending",
                 and_(
@@ -254,7 +256,11 @@ def encode_segment(segment: ClaimedSegment) -> Path:
         str(temporary_path),
     ]
 
-    return_code, stderr = run_ffmpeg_with_heartbeat(command, segment)
+    try:
+        return_code, stderr = run_ffmpeg_with_heartbeat(command, segment)
+    except EncodingError:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
     if return_code != 0 or not temporary_path.exists():
         temporary_path.unlink(missing_ok=True)
