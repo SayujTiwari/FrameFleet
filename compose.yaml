@@ -60,6 +60,8 @@ services:
       - backend.worker
     environment:
       FRAMEFLEET_DATABASE_URL: postgresql+psycopg://framefleet:framefleet@database:5432/framefleet
+      FRAMEFLEET_LEASE_SECONDS: ${FRAMEFLEET_LEASE_SECONDS:-15}
+      FRAMEFLEET_MAX_ATTEMPTS: ${FRAMEFLEET_MAX_ATTEMPTS:-3}
     depends_on:
       backend:
         condition: service_healthy

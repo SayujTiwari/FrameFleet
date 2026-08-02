@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     Uuid,
@@ -72,3 +73,25 @@ class EncodingSettingsRecord(Base):
     quality: Mapped[str] = mapped_column(String(32))
     video_crf: Mapped[int] = mapped_column(Integer)
     encoding_preset: Mapped[str] = mapped_column(String(32))
+
+
+# Lease and retry state kept separately
+class SegmentExecutionRecord(Base):
+    __tablename__ = "segment_executions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["job_id", "segment_index"],
+            ["encoding_segments.job_id", "encoding_segments.segment_index"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    job_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    segment_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    leased_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)

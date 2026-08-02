@@ -10,6 +10,7 @@ export type EncodingJob = {
   target_segment_seconds: number
   segment_count: number
   completed_segments: number
+  retry_count: number
   export_settings: {
     resolution: OutputResolution
     output_height: number | null

@@ -281,6 +281,12 @@ function App() {
                 segments are complete.
               </p>
 
+              {encodingJob.retry_count > 0 && (
+                <p>
+                  Encoding retries: {encodingJob.retry_count}.
+                </p>
+              )}
+
               {(encodingJob.status === 'ready' ||
                 encodingJob.status === 'processing') && (
                 <p>The background workers are encoding the video segments…</p>

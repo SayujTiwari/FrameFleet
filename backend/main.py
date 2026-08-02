@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from backend.database import Base, engine, get_database_session
+from backend.database import Base, SessionLocal, engine, get_database_session
 from backend.encoding_profiles import ENCODING_PROFILES, OUTPUT_HEIGHTS
 from backend.models import EncodingJobResponse, ExportSettingsResponse
 from backend.probe import MediaProbeError, probe_video
@@ -21,12 +21,46 @@ from backend.tables import (
     EncodingJobRecord,
     EncodingSegmentRecord,
     EncodingSettingsRecord,
+    SegmentExecutionRecord,
 )
+
+
+def backfill_segment_executions() -> None:
+    with SessionLocal() as session:
+        missing_segments = session.execute(
+            select(
+                EncodingSegmentRecord.job_id,
+                EncodingSegmentRecord.segment_index,
+            )
+            .outerjoin(
+                SegmentExecutionRecord,
+                (
+                    SegmentExecutionRecord.job_id
+                    == EncodingSegmentRecord.job_id
+                )
+                & (
+                    SegmentExecutionRecord.segment_index
+                    == EncodingSegmentRecord.segment_index
+                ),
+            )
+            .where(SegmentExecutionRecord.job_id.is_(None))
+        ).all()
+
+        session.add_all(
+            SegmentExecutionRecord(
+                job_id=job_id,
+                segment_index=segment_index,
+                attempt_count=0,
+            )
+            for job_id, segment_index in missing_segments
+        )
+        session.commit()
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    backfill_segment_executions()
     yield
 
 
@@ -100,10 +134,16 @@ def build_job_response(
         )
     )
     settings = session.get(EncodingSettingsRecord, job.job_id)
+    attempt_counts = session.scalars(
+        select(SegmentExecutionRecord.attempt_count).where(
+            SegmentExecutionRecord.job_id == job.job_id
+        )
+    ).all()
 
     return EncodingJobResponse.model_validate(job).model_copy(
         update={
             "completed_segments": completed_segments or 0,
+            "retry_count": sum(max(0, count - 1) for count in attempt_counts),
             "export_settings": (
                 ExportSettingsResponse.model_validate(settings)
                 if settings is not None
@@ -186,7 +226,7 @@ def create_encoding_job(
                 encoding_preset=profile.preset,
             )
         )
-        session.add_all(
+        segments = [
             EncodingSegmentRecord(
                 job_id=job_id,
                 segment_index=index,
@@ -199,6 +239,15 @@ def create_encoding_job(
                 output_path=None,
             )
             for index in range(segment_count)
+        ]
+        session.add_all(segments)
+        session.add_all(
+            SegmentExecutionRecord(
+                job_id=job_id,
+                segment_index=segment.segment_index,
+                attempt_count=0,
+            )
+            for segment in segments
         )
         session.commit()
     except SQLAlchemyError as error:

@@ -30,6 +30,7 @@ class EncodingJobResponse(BaseModel):
     target_segment_seconds: float
     segment_count: int
     completed_segments: int = 0
+    retry_count: int = 0
     export_settings: ExportSettingsResponse | None = None
     width: int
     height: int
