@@ -43,6 +43,45 @@ class EncodingJobRecord(Base):
     )
 
 
+# One uploaded master video that can produce several encoding jobs.
+class DeliveryBatchRecord(Base):
+    __tablename__ = "delivery_batches"
+
+    batch_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    file_name: Mapped[str] = mapped_column(String(255))
+    source_path: Mapped[str] = mapped_column(String(500))
+    file_size_bytes: Mapped[int] = mapped_column(BigInteger)
+    duration_seconds: Mapped[float] = mapped_column(Float)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    video_codec: Mapped[str] = mapped_column(String(50))
+    format_name: Mapped[str] = mapped_column(String(100))
+    has_audio: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+
+# Connects each requested delivery output to its existing encoding job.
+class DeliveryOutputRecord(Base):
+    __tablename__ = "delivery_outputs"
+
+    job_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("encoding_jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    batch_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("delivery_batches.batch_id", ondelete="CASCADE"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(60))
+    position: Mapped[int] = mapped_column(Integer)
+    output_directory: Mapped[str] = mapped_column(String(500))
+
+
 # each segment details
 class EncodingSegmentRecord(Base):
     __tablename__ = "encoding_segments"

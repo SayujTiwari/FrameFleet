@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from backend.database import SessionLocal
 from backend.tables import (
+    DeliveryOutputRecord,
     EncodingJobRecord,
     EncodingSegmentRecord,
     EncodingSettingsRecord,
@@ -35,6 +36,7 @@ class ClaimedSegment:
     job_id: UUID
     segment_index: int
     source_path: Path
+    output_directory: Path
     start_seconds: float
     end_seconds: float
     output_height: int | None
@@ -119,6 +121,7 @@ def claim_next_segment(session: Session) -> ClaimedSegment | None:
     segment, execution = row
     job = session.get(EncodingJobRecord, segment.job_id)
     settings = session.get(EncodingSettingsRecord, segment.job_id)
+    delivery_output = session.get(DeliveryOutputRecord, segment.job_id)
 
     if job is None:
         return None
@@ -135,6 +138,11 @@ def claim_next_segment(session: Session) -> ClaimedSegment | None:
         job_id=job.job_id,
         segment_index=segment.segment_index,
         source_path=Path(job.source_path),
+        output_directory=(
+            Path(delivery_output.output_directory)
+            if delivery_output is not None
+            else Path(job.source_path).parent
+        ),
         start_seconds=segment.start_seconds,
         end_seconds=segment.end_seconds,
         output_height=settings.output_height if settings else None,
@@ -215,7 +223,7 @@ def run_ffmpeg_with_heartbeat(
 
 
 def encode_segment(segment: ClaimedSegment) -> Path:
-    output_directory = segment.source_path.parent / "segments"
+    output_directory = segment.output_directory / "segments"
     output_directory.mkdir(exist_ok=True)
 
     prefix = f"segment-{segment.segment_index:05d}"
@@ -303,7 +311,7 @@ def finish_segment_success(
             return CompletionResult(accepted=False, should_assemble=False)
 
         output_path = (
-            segment.source_path.parent
+            segment.output_directory
             / "segments"
             / f"segment-{segment.segment_index:05d}.mkv"
         )
@@ -413,6 +421,7 @@ def finish_segment_failure(segment: ClaimedSegment, error: str) -> str:
 def assemble_job(job_id: UUID) -> Path:
     with SessionLocal() as session:
         job = session.get(EncodingJobRecord, job_id)
+        delivery_output = session.get(DeliveryOutputRecord, job_id)
         segment_paths = session.scalars(
             select(EncodingSegmentRecord.output_path)
             .where(
@@ -425,7 +434,11 @@ def assemble_job(job_id: UUID) -> Path:
     if job is None or len(segment_paths) != job.segment_count:
         raise EncodingError("Not all encoded segments are available")
 
-    job_directory = Path(job.source_path).parent
+    job_directory = (
+        Path(delivery_output.output_directory)
+        if delivery_output is not None
+        else Path(job.source_path).parent
+    )
     manifest_path = job_directory / "segments.txt"
     output_path = job_directory / "output.mp4"
     temporary_path = job_directory / "output.tmp.mp4"
