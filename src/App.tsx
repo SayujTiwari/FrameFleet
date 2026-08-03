@@ -30,6 +30,31 @@ type VideoDetails = {
   height: number
 }
 
+const STATUS_LABELS: Record<EncodingJob['status'], string> = {
+  ready: 'Queued',
+  processing: 'Encoding',
+  assembling: 'Assembling',
+  completed: 'Completed',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+}
+
+function getJobProgress(job: EncodingJob): number {
+  if (job.status === 'completed') {
+    return 100
+  }
+
+  if (job.segment_count === 0) {
+    return 0
+  }
+
+  return Math.round((job.completed_segments / job.segment_count) * 100)
+}
+
+function formatFileSize(sizeBytes: number): string {
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 // insert and sort by newest
 function addOrUpdateRecentJob(
   jobs: EncodingJob[],
@@ -263,250 +288,431 @@ function App() {
   }
 
   return (
-    <main>
-      <p>Faster way of video encoding</p>
-      <h1>FrameFleet</h1>
-      <p>Choose a video to inspect before creating an encoding job.</p>
-      
-      <input
-        type="file"
-        accept="video/*"
-        disabled={isUploading}
-        onChange={handleFileChange}
-      />
+    <main className="app-shell">
+      <header className="topbar">
+        <a className="brand" href="#top" aria-label="FrameFleet home">
+          <span className="brand-mark" aria-hidden="true">
+            FF
+          </span>
+          FrameFleet
+        </a>
+        <div className="fleet-status">
+          <span className="status-light" aria-hidden="true" />
+          Local fleet ready
+        </div>
+      </header>
 
-      {videoUrl && (
-        <video
-          src={videoUrl}
-          controls
-          preload="metadata"
-          onLoadedMetadata={handleMetadataLoaded}
-        />
-      )}
+      <section className="hero-section" id="top">
+        <div className="hero-glow" aria-hidden="true" />
+        <p className="eyebrow">Distributed video encoding</p>
+        <h1>
+          One video.
+          <br />
+          <span>A fleet of workers.</span>
+        </h1>
+        <p className="hero-copy">
+          Split large exports into independent segments, process them in
+          parallel, and assemble the result automatically.
+        </p>
+        <a className="primary-button hero-action" href="#workspace">
+          Create an export <span aria-hidden="true">↓</span>
+        </a>
+        <div className="feature-row" aria-label="FrameFleet features">
+          <span>Parallel segments</span>
+          <span>Automatic recovery</span>
+          <span>Durable job history</span>
+        </div>
+      </section>
 
-      {videoDetails && (
-        <section>
-          <h2>Video details</h2>
+      <section className="content-section" id="workspace">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Export workspace</p>
+            <h2>Prepare your video</h2>
+          </div>
+          <p>Select a source, verify its details, and configure the export.</p>
+        </div>
 
-          <dl>
-            <dt>Filename</dt>
-            <dd>{videoDetails.name}</dd>
+        <div className="workspace-grid">
+          <section className="glossy-card preview-card">
+            <div className="card-heading">
+              <div>
+                <p className="card-label">01 / Source</p>
+                <h3>Video preview</h3>
+              </div>
+              {videoDetails && <span className="ready-chip">Ready</span>}
+            </div>
 
-            <dt>File type</dt>
-            <dd>{videoDetails.type}</dd>
+            {videoUrl ? (
+              <video
+                className="video-preview"
+                src={videoUrl}
+                controls
+                preload="metadata"
+                onLoadedMetadata={handleMetadataLoaded}
+              />
+            ) : (
+              <div className="preview-placeholder">
+                <span className="upload-symbol" aria-hidden="true">
+                  ↑
+                </span>
+                <strong>No video selected</strong>
+                <span>MP4, MOV, WebM, or another browser-supported video</span>
+              </div>
+            )}
 
-            <dt>File size</dt>
-            <dd>{videoDetails.sizeMb.toFixed(2)} MB</dd>
-
-            <dt>Duration</dt>
-            <dd>{videoDetails.durationSeconds.toFixed(1)} seconds</dd>
-
-            <dt>Resolution</dt>
-            <dd>
-              {videoDetails.width} × {videoDetails.height}
-            </dd>
-          </dl>
-        </section>
-      )}
-
-      {plannedSegments.length > 0 && (
-        <section>
-          <fieldset disabled={isUploading}>
-            <legend>Export settings</legend>
-
-            <label>
-              Resolution
-              <select
-                value={outputResolution}
-                onChange={(event) =>
-                  setOutputResolution(event.target.value as OutputResolution)
-                }
-              >
-                <option value="original">Original</option>
-                <option value="1080p">1080p</option>
-                <option value="720p">720p</option>
-                <option value="480p">480p</option>
-              </select>
+            <input
+              className="file-input"
+              id="video-upload"
+              type="file"
+              accept="video/*"
+              disabled={isUploading}
+              onChange={handleFileChange}
+            />
+            <label className="file-picker" htmlFor="video-upload">
+              <span>{videoUrl ? 'Choose a different video' : 'Choose video'}</span>
+              <span aria-hidden="true">Browse files ↗</span>
             </label>
 
-            <label>
-              Quality
-              <select
-                value={quality}
-                onChange={(event) =>
-                  setQuality(event.target.value as QualityProfile)
-                }
-              >
-                <option value="high">High quality</option>
-                <option value="balanced">Balanced</option>
-                <option value="compact">Smaller file</option>
-              </select>
-            </label>
-          </fieldset>
+            {videoDetails && (
+              <dl className="metadata-grid">
+                <div>
+                  <dt>Filename</dt>
+                  <dd title={videoDetails.name}>{videoDetails.name}</dd>
+                </div>
+                <div>
+                  <dt>File size</dt>
+                  <dd>{videoDetails.sizeMb.toFixed(1)} MB</dd>
+                </div>
+                <div>
+                  <dt>Duration</dt>
+                  <dd>{videoDetails.durationSeconds.toFixed(1)} sec</dd>
+                </div>
+                <div>
+                  <dt>Resolution</dt>
+                  <dd>
+                    {videoDetails.width} × {videoDetails.height}
+                  </dd>
+                </div>
+              </dl>
+            )}
+          </section>
 
-          <h2>Segment plan</h2>
-          <p>
-            {plannedSegments.length} segments, each up to{' '}
-            {TARGET_SEGMENT_SECONDS} seconds long
-          </p>
+          <section className="glossy-card settings-card">
+            <div className="card-heading">
+              <div>
+                <p className="card-label">02 / Configure</p>
+                <h3>Export settings</h3>
+              </div>
+              {plannedSegments.length > 0 && (
+                <span className="segment-count">
+                  {plannedSegments.length} segments
+                </span>
+              )}
+            </div>
 
-          <ol>
-            {visibleSegments.map((segment) => (
-              <li key={segment.index}>
-                Segment {segment.index + 1}: {segment.startSeconds.toFixed(1)}–
-                {segment.endSeconds.toFixed(1)} seconds
-              </li>
-            ))}
-          </ol>
+            {plannedSegments.length === 0 ? (
+              <div className="settings-placeholder">
+                <span>02</span>
+                <p>Video settings will appear after you select a source.</p>
+              </div>
+            ) : (
+              <>
+                <fieldset className="settings-fields" disabled={isUploading}>
+                  <label>
+                    <span>Resolution</span>
+                    <select
+                      value={outputResolution}
+                      onChange={(event) =>
+                        setOutputResolution(
+                          event.target.value as OutputResolution,
+                        )
+                      }
+                    >
+                      <option value="original">Original</option>
+                      <option value="1080p">1080p</option>
+                      <option value="720p">720p</option>
+                      <option value="480p">480p</option>
+                    </select>
+                  </label>
 
-          {plannedSegments.length > 5 && (
-            <button
-              type="button"
-              onClick={() => setShowAllSegments((current) => !current)}
-            >
-              {showAllSegments ? 'Show fewer segments' : 'Show all segments'}
-            </button>
-          )}
+                  <label>
+                    <span>Quality</span>
+                    <select
+                      value={quality}
+                      onChange={(event) =>
+                        setQuality(event.target.value as QualityProfile)
+                      }
+                    >
+                      <option value="high">High quality</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="compact">Smaller file</option>
+                    </select>
+                  </label>
+                </fieldset>
 
-          <button
-            type="button"
-            disabled={isUploading}
-            onClick={handleCreateJob}
-          >
-            {isUploading
-              ? `Uploading ${uploadProgress}%`
-              : 'Upload and create job'}
-          </button>
+                <div className="segment-plan">
+                  <div className="subheading-row">
+                    <h4>Segment plan</h4>
+                    <span>Up to {TARGET_SEGMENT_SECONDS}s each</span>
+                  </div>
+                  <ol className="segment-list">
+                    {visibleSegments.map((segment) => (
+                      <li key={segment.index}>
+                        <span>{String(segment.index + 1).padStart(2, '0')}</span>
+                        <strong>
+                          {segment.startSeconds.toFixed(1)}–
+                          {segment.endSeconds.toFixed(1)}s
+                        </strong>
+                      </li>
+                    ))}
+                  </ol>
 
-          {isUploading && <progress value={uploadProgress} max="100" />}
+                  {plannedSegments.length > 5 && (
+                    <button
+                      className="text-button"
+                      type="button"
+                      onClick={() => setShowAllSegments((current) => !current)}
+                    >
+                      {showAllSegments
+                        ? 'Show fewer segments'
+                        : `Show all ${plannedSegments.length} segments`}
+                    </button>
+                  )}
+                </div>
 
-          {jobError && <p role="alert">{jobError}</p>}
+                <button
+                  className="primary-button create-button"
+                  type="button"
+                  disabled={isUploading}
+                  onClick={handleCreateJob}
+                >
+                  {isUploading
+                    ? `Uploading ${uploadProgress}%`
+                    : 'Start distributed export'}
+                  <span aria-hidden="true">→</span>
+                </button>
 
-          {encodingJob && (
-            <section>
-              <h2>Encoding job</h2>
-              <p>
-                Job {encodingJob.job_id} is {encodingJob.status}.{' '}
-                {encodingJob.completed_segments} of {encodingJob.segment_count}{' '}
-                segments are complete.
+                {isUploading && (
+                  <div className="upload-progress" aria-live="polite">
+                    <div>
+                      <span>Uploading source</span>
+                      <span>{uploadProgress}%</span>
+                    </div>
+                    <progress value={uploadProgress} max="100" />
+                  </div>
+                )}
+              </>
+            )}
+
+            {jobError && (
+              <p className="error-message" role="alert">
+                {jobError}
               </p>
+            )}
+          </section>
+        </div>
+      </section>
 
-              {encodingJob.retry_count > 0 && (
-                <p>
-                  Encoding retries: {encodingJob.retry_count}.
-                </p>
+      {encodingJob && (
+        <section className="content-section job-section" aria-live="polite">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Live export</p>
+              <h2>{encodingJob.file_name}</h2>
+            </div>
+            <span className={`status-badge status-${encodingJob.status}`}>
+              {STATUS_LABELS[encodingJob.status]}
+            </span>
+          </div>
+
+          <div className="glossy-card job-card">
+            <div className="job-progress-heading">
+              <div>
+                <strong>{getJobProgress(encodingJob)}%</strong>
+                <span>overall progress</span>
+              </div>
+              <p>
+                {encodingJob.completed_segments} of {encodingJob.segment_count}{' '}
+                segments encoded
+              </p>
+            </div>
+            <progress
+              className="job-progress"
+              value={getJobProgress(encodingJob)}
+              max="100"
+            />
+
+            <div className="job-message-row">
+              <div>
+                {(encodingJob.status === 'ready' ||
+                  encodingJob.status === 'processing') && (
+                  <p>Workers are processing independent ranges in parallel.</p>
+                )}
+                {encodingJob.status === 'assembling' && (
+                  <p>All segments are ready. Assembling the final video…</p>
+                )}
+                {encodingJob.status === 'completed' && (
+                  <p>Your export is assembled and ready to download.</p>
+                )}
+                {encodingJob.status === 'failed' && (
+                  <p className="error-message" role="alert">
+                    The export could not be completed.
+                  </p>
+                )}
+                {encodingJob.status === 'cancelled' && (
+                  <p>This export was cancelled before completion.</p>
+                )}
+                {encodingJob.retry_count > 0 && (
+                  <span className="retry-note">
+                    {encodingJob.retry_count} worker{' '}
+                    {encodingJob.retry_count === 1 ? 'retry' : 'retries'}
+                  </span>
+                )}
+              </div>
+
+              {encodingJob.status === 'completed' && (
+                <a
+                  className="primary-button compact-button"
+                  href={getEncodingJobDownloadUrl(encodingJob.job_id)}
+                >
+                  Download export ↓
+                </a>
               )}
 
               {(encodingJob.status === 'ready' ||
                 encodingJob.status === 'processing') && (
-                <>
-                  <p>The background workers are encoding the video segments…</p>
-                  <button
-                    type="button"
-                    disabled={cancellingJobId === encodingJob.job_id}
-                    onClick={() => handleCancelJob(encodingJob)}
-                  >
-                    {cancellingJobId === encodingJob.job_id
-                      ? 'Cancelling…'
-                      : 'Cancel export'}
-                  </button>
-                </>
+                <button
+                  className="secondary-button compact-button"
+                  type="button"
+                  disabled={cancellingJobId === encodingJob.job_id}
+                  onClick={() => handleCancelJob(encodingJob)}
+                >
+                  {cancellingJobId === encodingJob.job_id
+                    ? 'Cancelling…'
+                    : 'Cancel export'}
+                </button>
               )}
+            </div>
 
-              {encodingJob.status === 'assembling' && (
-                <p>The encoded segments are being assembled into one video…</p>
-              )}
-
-              {encodingJob.status === 'completed' && (
-                <p>
-                  Your export is ready.{' '}
-                  <a href={getEncodingJobDownloadUrl(encodingJob.job_id)}>
-                    Download video
-                  </a>
-                </p>
-              )}
-
-              {encodingJob.status === 'failed' && (
-                <p role="alert">The video export could not be completed.</p>
-              )}
-
-              {encodingJob.status === 'cancelled' && (
-                <p>The video export was cancelled.</p>
-              )}
-
-              <dl>
-                <dt>Output resolution</dt>
+            <dl className="job-detail-grid">
+              <div>
+                <dt>Export ID</dt>
+                <dd>{encodingJob.job_id.slice(0, 8)}</dd>
+              </div>
+              <div>
+                <dt>Output</dt>
                 <dd>
                   {encodingJob.export_settings?.output_height
                     ? `${encodingJob.export_settings.output_height}p`
                     : 'Original'}
                 </dd>
-
+              </div>
+              <div>
                 <dt>Quality</dt>
                 <dd>{encodingJob.export_settings?.quality ?? 'Balanced'}</dd>
-
-                <dt>Verified duration</dt>
-                <dd>{encodingJob.duration_seconds.toFixed(1)} seconds</dd>
-
-                <dt>Verified resolution</dt>
+              </div>
+              <div>
+                <dt>Source</dt>
                 <dd>
                   {encodingJob.width} × {encodingJob.height}
                 </dd>
-
-                <dt>Video codec</dt>
+              </div>
+              <div>
+                <dt>Codec</dt>
                 <dd>{encodingJob.video_codec}</dd>
-
-                <dt>Container format</dt>
-                <dd>{encodingJob.format_name}</dd>
-
-                <dt>Audio stream</dt>
-                <dd>{encodingJob.has_audio ? 'Present' : 'Not present'}</dd>
-              </dl>
-            </section>
-          )}
+              </div>
+              <div>
+                <dt>Audio</dt>
+                <dd>{encodingJob.has_audio ? 'Included' : 'None'}</dd>
+              </div>
+            </dl>
+          </div>
         </section>
       )}
 
-      <section>
-        <h2>Recent exports</h2>
+      <section className="content-section history-section">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Job history</p>
+            <h2>Recent exports</h2>
+          </div>
+          <p>Durable records from your latest encoding jobs.</p>
+        </div>
 
-        {historyError && <p role="alert">{historyError}</p>}
+        {historyError && (
+          <p className="error-message" role="alert">
+            {historyError}
+          </p>
+        )}
 
         {recentJobs.length === 0 ? (
-          <p>No exports yet.</p>
+          <div className="empty-history glossy-card">
+            <span aria-hidden="true">◇</span>
+            <h3>No exports yet</h3>
+            <p>Your completed and active jobs will appear here.</p>
+          </div>
         ) : (
-          <ol>
+          <ol className="history-list">
             {recentJobs.map((job) => (
-              <li key={job.job_id}>
-                <strong>{job.file_name}</strong>
-                <p>
-                  {job.status} · {job.completed_segments} of {job.segment_count}{' '}
-                  segments complete
-                </p>
-                <p>{new Date(job.created_at).toLocaleString()}</p>
+              <li className="history-card glossy-card" key={job.job_id}>
+                <div className="history-main">
+                  <div className="file-icon" aria-hidden="true">
+                    ▶
+                  </div>
+                  <div className="history-copy">
+                    <div className="history-title-row">
+                      <strong title={job.file_name}>{job.file_name}</strong>
+                      <span className={`status-badge status-${job.status}`}>
+                        {STATUS_LABELS[job.status]}
+                      </span>
+                    </div>
+                    <p>
+                      {formatFileSize(job.file_size_bytes)} ·{' '}
+                      {job.segment_count} segments ·{' '}
+                      {new Date(job.created_at).toLocaleString()}
+                    </p>
+                    <div className="history-progress-row">
+                      <progress value={getJobProgress(job)} max="100" />
+                      <span>{getJobProgress(job)}%</span>
+                    </div>
+                  </div>
+                </div>
 
-                {job.status === 'completed' && (
-                  <a href={getEncodingJobDownloadUrl(job.job_id)}>
-                    Download video
-                  </a>
-                )}
+                <div className="history-actions">
+                  {job.status === 'completed' && (
+                    <a href={getEncodingJobDownloadUrl(job.job_id)}>
+                      Download ↓
+                    </a>
+                  )}
 
-                {(job.status === 'ready' || job.status === 'processing') && (
-                  <button
-                    type="button"
-                    disabled={cancellingJobId === job.job_id}
-                    onClick={() => handleCancelJob(job)}
-                  >
-                    {cancellingJobId === job.job_id
-                      ? 'Cancelling…'
-                      : 'Cancel export'}
-                  </button>
-                )}
+                  {(job.status === 'ready' || job.status === 'processing') && (
+                    <button
+                      type="button"
+                      disabled={cancellingJobId === job.job_id}
+                      onClick={() => handleCancelJob(job)}
+                    >
+                      {cancellingJobId === job.job_id
+                        ? 'Cancelling…'
+                        : 'Cancel'}
+                    </button>
+                  )}
+                </div>
               </li>
             ))}
           </ol>
         )}
       </section>
+
+      <footer>
+        <a className="brand footer-brand" href="#top">
+          <span className="brand-mark" aria-hidden="true">
+            FF
+          </span>
+          FrameFleet
+        </a>
+        <p>Distributed exports, built from first principles.</p>
+      </footer>
     </main>
   )
 }
