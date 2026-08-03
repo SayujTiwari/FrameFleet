@@ -10,6 +10,7 @@ import {
   createEncodingJob,
   getEncodingJob,
   getEncodingJobDownloadUrl,
+  listEncodingJobs,
   type EncodingJob,
   type OutputResolution,
   type QualityProfile,
@@ -17,6 +18,7 @@ import {
 import { planSegments } from './video/planSegments'
 
 const TARGET_SEGMENT_SECONDS = 30
+const MAX_RECENT_JOBS = 20
 
 // video data
 type VideoDetails = {
@@ -26,6 +28,19 @@ type VideoDetails = {
   durationSeconds: number
   width: number
   height: number
+}
+
+// insert and sort by newest
+function addOrUpdateRecentJob(
+  jobs: EncodingJob[],
+  updatedJob: EncodingJob,
+): EncodingJob[] {
+  return [updatedJob, ...jobs.filter((job) => job.job_id !== updatedJob.job_id)] // remove if old version
+    .sort(
+      (first, second) =>
+        Date.parse(second.created_at) - Date.parse(first.created_at),
+    )
+    .slice(0, MAX_RECENT_JOBS) 
 }
 
 // main func
@@ -38,12 +53,20 @@ function App() {
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [jobError, setJobError] = useState<string | null>(null)
-  const [isCancelling, setIsCancelling] = useState(false)
+  const [recentJobs, setRecentJobs] = useState<EncodingJob[]>([])
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [cancellingJobId, setCancellingJobId] = useState<string | null>(null)
   const [outputResolution, setOutputResolution] =
     useState<OutputResolution>('original')
   const [quality, setQuality] = useState<QualityProfile>('balanced')
   const encodingJobId = encodingJob?.job_id
   const encodingJobStatus = encodingJob?.status
+  const hasActiveRecentJobs = recentJobs.some(
+    (job) =>
+      job.status === 'ready' ||
+      job.status === 'processing' ||
+      job.status === 'assembling',
+  )
 
   const plannedSegments = videoDetails
     ? planSegments(videoDetails.durationSeconds, TARGET_SEGMENT_SECONDS)
@@ -62,10 +85,64 @@ function App() {
     }
   }, [videoUrl])
 
+  // load recent jobs
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadRecentJobs() {
+      try {
+        const jobs = await listEncodingJobs(MAX_RECENT_JOBS)
+
+        if (!cancelled) {
+          setRecentJobs(jobs)
+          setHistoryError(null)
+        }
+      } catch {
+        if (!cancelled) {
+          setHistoryError('Could not load recent exports')
+        }
+      }
+    }
+
+    void loadRecentJobs()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // polling while one job active
+  useEffect(() => {
+    if (!hasActiveRecentJobs) {
+      return
+    }
+
+    let cancelled = false
+    const intervalId = window.setInterval(async () => {
+      try {
+        const jobs = await listEncodingJobs(MAX_RECENT_JOBS)
+
+        if (!cancelled) {
+          setRecentJobs(jobs)
+          setHistoryError(null)
+        }
+      } catch {
+        if (!cancelled) {
+          setHistoryError('Could not refresh recent exports')
+        }
+      }
+    }, 2000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [hasActiveRecentJobs])
+
   useEffect(() => {
     if (
       !encodingJobId ||
-      isCancelling ||
+      cancellingJobId === encodingJobId ||
       encodingJobStatus === 'completed' ||
       encodingJobStatus === 'failed' ||
       encodingJobStatus === 'cancelled'
@@ -81,6 +158,9 @@ function App() {
         // if still going update components
         if (!cancelled) {
           setEncodingJob(updatedJob)
+          setRecentJobs((currentJobs) =>
+            addOrUpdateRecentJob(currentJobs, updatedJob),
+          )
           setJobError(null)
         }
       } catch {
@@ -94,7 +174,7 @@ function App() {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [encodingJobId, encodingJobStatus, isCancelling])
+  }, [encodingJobId, encodingJobStatus, cancellingJobId])
 
   // new file is selected
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -106,7 +186,6 @@ function App() {
     setEncodingJob(null)
     setUploadProgress(0)
     setJobError(null)
-    setIsCancelling(false)
     setVideoUrl(file ? URL.createObjectURL(file) : null)
   }
 
@@ -148,6 +227,7 @@ function App() {
       })
 
       setEncodingJob(job)
+      setRecentJobs((currentJobs) => addOrUpdateRecentJob(currentJobs, job))
     } catch (error) {
       setJobError(
         error instanceof Error ? error.message : 'Could not create the job',
@@ -157,23 +237,28 @@ function App() {
     }
   }
 
-  async function handleCancelJob() {
-    if (!encodingJob) {
-      return
-    }
-
-    setIsCancelling(true)
+  async function handleCancelJob(job: EncodingJob) {
+    setCancellingJobId(job.job_id)
     setJobError(null)
+    setHistoryError(null)
 
     try {
-      const cancelledJob = await cancelEncodingJob(encodingJob.job_id)
-      setEncodingJob(cancelledJob)
-    } catch (error) {
-      setJobError(
-        error instanceof Error ? error.message : 'Could not cancel the job',
+      const cancelledJob = await cancelEncodingJob(job.job_id)
+      setEncodingJob((currentJob) =>
+        currentJob?.job_id === job.job_id ? cancelledJob : currentJob,
       )
+      setRecentJobs((currentJobs) =>
+        addOrUpdateRecentJob(currentJobs, cancelledJob),
+      )
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Could not cancel the job'
+      setJobError(message)
+      setHistoryError(message)
     } finally {
-      setIsCancelling(false)
+      setCancellingJobId((currentJobId) =>
+        currentJobId === job.job_id ? null : currentJobId,
+      )
     }
   }
 
@@ -318,10 +403,12 @@ function App() {
                   <p>The background workers are encoding the video segments…</p>
                   <button
                     type="button"
-                    disabled={isCancelling}
-                    onClick={handleCancelJob}
+                    disabled={cancellingJobId === encodingJob.job_id}
+                    onClick={() => handleCancelJob(encodingJob)}
                   >
-                    {isCancelling ? 'Cancelling…' : 'Cancel export'}
+                    {cancellingJobId === encodingJob.job_id
+                      ? 'Cancelling…'
+                      : 'Cancel export'}
                   </button>
                 </>
               )}
@@ -379,6 +466,47 @@ function App() {
           )}
         </section>
       )}
+
+      <section>
+        <h2>Recent exports</h2>
+
+        {historyError && <p role="alert">{historyError}</p>}
+
+        {recentJobs.length === 0 ? (
+          <p>No exports yet.</p>
+        ) : (
+          <ol>
+            {recentJobs.map((job) => (
+              <li key={job.job_id}>
+                <strong>{job.file_name}</strong>
+                <p>
+                  {job.status} · {job.completed_segments} of {job.segment_count}{' '}
+                  segments complete
+                </p>
+                <p>{new Date(job.created_at).toLocaleString()}</p>
+
+                {job.status === 'completed' && (
+                  <a href={getEncodingJobDownloadUrl(job.job_id)}>
+                    Download video
+                  </a>
+                )}
+
+                {(job.status === 'ready' || job.status === 'processing') && (
+                  <button
+                    type="button"
+                    disabled={cancellingJobId === job.job_id}
+                    onClick={() => handleCancelJob(job)}
+                  >
+                    {cancellingJobId === job.job_id
+                      ? 'Cancelling…'
+                      : 'Cancel export'}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
     </main>
   )
 }

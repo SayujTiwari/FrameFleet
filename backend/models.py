@@ -1,10 +1,11 @@
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
 
-# # API response schemas returned to the frontend
+# API response schemas returned to the frontend
 class ExportSettingsResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -17,6 +18,7 @@ class EncodingJobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     job_id: UUID
+    created_at: datetime
     status: Literal[
         "ready",
         "processing",

@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from math import ceil
 import os
@@ -6,7 +7,7 @@ from shutil import rmtree
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select, update
@@ -120,37 +121,77 @@ def save_upload(upload: UploadFile, job_directory: Path) -> tuple[Path, int]:
         upload.file.close()
 
 
-# get the nessacary info (helper)
+# Build responses for several jobs without repeating the same queries per job.
+def build_job_responses(
+    session: Session,
+    jobs: Sequence[EncodingJobRecord],
+) -> list[EncodingJobResponse]:
+    if not jobs:
+        return []
+
+    job_ids = [job.job_id for job in jobs]
+    completed_segments_by_job = dict(
+        session.execute(
+            select(EncodingSegmentRecord.job_id, func.count())
+            .where(
+                EncodingSegmentRecord.job_id.in_(job_ids),
+                EncodingSegmentRecord.status == "completed",
+            )
+            .group_by(EncodingSegmentRecord.job_id)
+        ).all()
+    )
+    settings_by_job = {
+        settings.job_id: settings
+        for settings in session.scalars(
+            select(EncodingSettingsRecord).where(
+                EncodingSettingsRecord.job_id.in_(job_ids)
+            )
+        ).all()
+    }
+    retry_counts_by_job = dict.fromkeys(job_ids, 0)
+
+    attempt_counts = session.execute(
+        select(
+            SegmentExecutionRecord.job_id,
+            SegmentExecutionRecord.attempt_count,
+        )
+        .where(
+            SegmentExecutionRecord.job_id.in_(job_ids)
+        )
+    ).all()
+
+    for job_id, attempt_count in attempt_counts:
+        retry_counts_by_job[job_id] += max(0, attempt_count - 1)
+
+    responses = []
+
+    for job in jobs:
+        settings = settings_by_job.get(job.job_id)
+        responses.append(
+            EncodingJobResponse.model_validate(job).model_copy(
+                update={
+                    "completed_segments": completed_segments_by_job.get(
+                        job.job_id,
+                        0,
+                    ),
+                    "retry_count": retry_counts_by_job[job.job_id],
+                    "export_settings": (
+                        ExportSettingsResponse.model_validate(settings)
+                        if settings is not None
+                        else None
+                    ),
+                }
+            )
+        )
+
+    return responses
+
+
 def build_job_response(
     session: Session,
     job: EncodingJobRecord,
 ) -> EncodingJobResponse:
-    completed_segments = session.scalar(
-        select(func.count())
-        .select_from(EncodingSegmentRecord)
-        .where(
-            EncodingSegmentRecord.job_id == job.job_id,
-            EncodingSegmentRecord.status == "completed",
-        )
-    )
-    settings = session.get(EncodingSettingsRecord, job.job_id)
-    attempt_counts = session.scalars(
-        select(SegmentExecutionRecord.attempt_count).where(
-            SegmentExecutionRecord.job_id == job.job_id
-        )
-    ).all()
-
-    return EncodingJobResponse.model_validate(job).model_copy(
-        update={
-            "completed_segments": completed_segments or 0,
-            "retry_count": sum(max(0, count - 1) for count in attempt_counts),
-            "export_settings": (
-                ExportSettingsResponse.model_validate(settings)
-                if settings is not None
-                else None
-            ),
-        }
-    )
+    return build_job_responses(session, [job])[0]
 
 
 @app.post("/jobs", status_code=201)
@@ -259,6 +300,20 @@ def create_encoding_job(
         ) from error
 
     return build_job_response(session, job)
+
+
+@app.get("/jobs")
+def list_encoding_jobs(
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    session: Session = Depends(get_database_session),
+) -> list[EncodingJobResponse]:
+    jobs = session.scalars(
+        select(EncodingJobRecord)
+        .order_by(EncodingJobRecord.created_at.desc())
+        .limit(limit)
+    ).all()
+
+    return build_job_responses(session, jobs)
 
 
 @app.get("/jobs/{job_id}")

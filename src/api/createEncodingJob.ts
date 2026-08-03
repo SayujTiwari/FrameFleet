@@ -3,6 +3,7 @@ export type QualityProfile = 'high' | 'balanced' | 'compact'
 
 export type EncodingJob = {
   job_id: string
+  created_at: string
   status:
     | 'ready'
     | 'processing'
@@ -30,6 +31,21 @@ export type EncodingJob = {
 }
 
 const API_BASE_URL = 'http://127.0.0.1:8000'
+
+export async function listEncodingJobs(limit = 20): Promise<EncodingJob[]> {
+  const response = await fetch(`${API_BASE_URL}/jobs?limit=${limit}`)
+  const body = await response.json()
+
+  if (!response.ok) {
+    throw new Error(
+      typeof body.detail === 'string'
+        ? body.detail
+        : `Backend returned status ${response.status}`,
+    )
+  }
+
+  return body as EncodingJob[]
+}
 
 export async function getEncodingJob(jobId: string): Promise<EncodingJob> {
   const response = await fetch(`${API_BASE_URL}/jobs/${jobId}`)
