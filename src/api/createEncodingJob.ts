@@ -30,6 +30,31 @@ export type EncodingJob = {
   has_audio: boolean
 }
 
+export type DeliveryOutputRequest = {
+  name: string
+  resolution: OutputResolution
+  quality: QualityProfile
+}
+
+export type DeliveryOutput = {
+  name: string
+  job: EncodingJob
+}
+
+export type DeliveryBatch = {
+  batch_id: string
+  created_at: string
+  file_name: string
+  file_size_bytes: number
+  duration_seconds: number
+  width: number
+  height: number
+  video_codec: string
+  format_name: string
+  has_audio: boolean
+  outputs: DeliveryOutput[]
+}
+
 const API_BASE_URL = 'http://127.0.0.1:8000'
 
 export async function listEncodingJobs(limit = 20): Promise<EncodingJob[]> {
@@ -60,6 +85,23 @@ export async function getEncodingJob(jobId: string): Promise<EncodingJob> {
   }
 
   return body as EncodingJob
+}
+
+export async function getDeliveryBatch(
+  batchId: string,
+): Promise<DeliveryBatch> {
+  const response = await fetch(`${API_BASE_URL}/deliveries/${batchId}`)
+  const body = await response.json()
+
+  if (!response.ok) {
+    throw new Error(
+      typeof body.detail === 'string'
+        ? body.detail
+        : `Backend returned status ${response.status}`,
+    )
+  }
+
+  return body as DeliveryBatch
 }
 
 export async function cancelEncodingJob(jobId: string): Promise<EncodingJob> {
@@ -118,6 +160,59 @@ export function createEncodingJob({
     request.addEventListener('load', () => {
       if (request.status >= 200 && request.status < 300) {
         resolve(request.response as EncodingJob)
+        return
+      }
+
+      const detail = request.response?.detail
+      reject(
+        new Error(
+          typeof detail === 'string'
+            ? detail
+            : `Backend returned status ${request.status}`,
+        ),
+      )
+    })
+
+    request.addEventListener('error', () => {
+      reject(new Error('Could not connect to the backend'))
+    })
+
+    request.send(formData)
+  })
+}
+
+type CreateDeliveryBatchOptions = {
+  video: File
+  targetSegmentSeconds: number
+  outputs: DeliveryOutputRequest[]
+  onProgress: (percentage: number) => void
+}
+
+export function createDeliveryBatch({
+  video,
+  targetSegmentSeconds,
+  outputs,
+  onProgress,
+}: CreateDeliveryBatchOptions): Promise<DeliveryBatch> {
+  const formData = new FormData()
+  formData.append('video', video)
+  formData.append('target_segment_seconds', targetSegmentSeconds.toString())
+  formData.append('outputs', JSON.stringify(outputs))
+
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open('POST', `${API_BASE_URL}/deliveries`)
+    request.responseType = 'json'
+
+    request.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable) {
+        onProgress(Math.round((event.loaded / event.total) * 100))
+      }
+    })
+
+    request.addEventListener('load', () => {
+      if (request.status >= 200 && request.status < 300) {
+        resolve(request.response as DeliveryBatch)
         return
       }
 

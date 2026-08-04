@@ -7,10 +7,12 @@ import {
 import './App.css'
 import {
   cancelEncodingJob,
-  createEncodingJob,
-  getEncodingJob,
+  createDeliveryBatch,
+  getDeliveryBatch,
   getEncodingJobDownloadUrl,
   listEncodingJobs,
+  type DeliveryBatch,
+  type DeliveryOutputRequest,
   type EncodingJob,
   type OutputResolution,
   type QualityProfile,
@@ -29,6 +31,31 @@ type VideoDetails = {
   width: number
   height: number
 }
+
+type DeliveryOutputDraft = DeliveryOutputRequest & {
+  id: string
+}
+
+const DEFAULT_DELIVERY_OUTPUTS: DeliveryOutputDraft[] = [
+  {
+    id: 'archive-master',
+    name: 'Archive master',
+    resolution: 'original',
+    quality: 'high',
+  },
+  {
+    id: 'social-hd',
+    name: 'Social HD',
+    resolution: '1080p',
+    quality: 'balanced',
+  },
+  {
+    id: 'web-preview',
+    name: 'Web preview',
+    resolution: '720p',
+    quality: 'compact',
+  },
+]
 
 const STATUS_LABELS: Record<EncodingJob['status'], string> = {
   ready: 'Queued',
@@ -51,6 +78,19 @@ function getJobProgress(job: EncodingJob): number {
   return Math.round((job.completed_segments / job.segment_count) * 100)
 }
 
+// average between all ouputs and where they at
+function getBatchProgress(batch: DeliveryBatch): number {
+  if (batch.outputs.length === 0) {
+    return 0
+  }
+
+  const totalProgress = batch.outputs.reduce(
+    (sum, output) => sum + getJobProgress(output.job),
+    0,
+  )
+  return Math.round(totalProgress / batch.outputs.length)
+}
+
 function formatFileSize(sizeBytes: number): string {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
 }
@@ -68,24 +108,38 @@ function addOrUpdateRecentJob(
     .slice(0, MAX_RECENT_JOBS) 
 }
 
+function addBatchJobsToHistory(
+  jobs: EncodingJob[],
+  batch: DeliveryBatch,
+): EncodingJob[] {
+  return batch.outputs.reduce(
+    (currentJobs, output) => addOrUpdateRecentJob(currentJobs, output.job),
+    jobs,
+  )
+}
+
 // main func
 function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)  // the actaul file object
   const [videoUrl, setVideoUrl] = useState<string | null>(null) // temporary url that <video> can read
   const [videoDetails, setVideoDetails] = useState<VideoDetails | null>(null) // metadata
-  const [showAllSegments, setShowAllSegments] = useState(false)
-  const [encodingJob, setEncodingJob] = useState<EncodingJob | null>(null)
+  const [deliveryOutputs, setDeliveryOutputs] = useState<
+    DeliveryOutputDraft[]
+  >(DEFAULT_DELIVERY_OUTPUTS)
+  const [deliveryBatch, setDeliveryBatch] = useState<DeliveryBatch | null>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [jobError, setJobError] = useState<string | null>(null)
   const [recentJobs, setRecentJobs] = useState<EncodingJob[]>([])
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null)
-  const [outputResolution, setOutputResolution] =
-    useState<OutputResolution>('original')
-  const [quality, setQuality] = useState<QualityProfile>('balanced')
-  const encodingJobId = encodingJob?.job_id
-  const encodingJobStatus = encodingJob?.status
+  const deliveryBatchId = deliveryBatch?.batch_id
+  const hasActiveDelivery = deliveryBatch?.outputs.some(
+    ({ job }) =>
+      job.status === 'ready' ||
+      job.status === 'processing' ||
+      job.status === 'assembling',
+  )
   const hasActiveRecentJobs = recentJobs.some(
     (job) =>
       job.status === 'ready' ||
@@ -96,10 +150,6 @@ function App() {
   const plannedSegments = videoDetails
     ? planSegments(videoDetails.durationSeconds, TARGET_SEGMENT_SECONDS)
     : []
-
-  const visibleSegments = showAllSegments
-    ? plannedSegments
-    : plannedSegments.slice(0, 5)
 
   // prevent old urls from being retained 
   useEffect(() => {
@@ -165,32 +215,25 @@ function App() {
   }, [hasActiveRecentJobs])
 
   useEffect(() => {
-    if (
-      !encodingJobId ||
-      cancellingJobId === encodingJobId ||
-      encodingJobStatus === 'completed' ||
-      encodingJobStatus === 'failed' ||
-      encodingJobStatus === 'cancelled'
-    ) {
+    if (!deliveryBatchId || !hasActiveDelivery) {
       return
     }
 
     let cancelled = false
     const intervalId = window.setInterval(async () => {
       try {
-        const updatedJob = await getEncodingJob(encodingJobId)  // req to backend
+        const updatedBatch = await getDeliveryBatch(deliveryBatchId)
 
-        // if still going update components
         if (!cancelled) {
-          setEncodingJob(updatedJob)
+          setDeliveryBatch(updatedBatch)
           setRecentJobs((currentJobs) =>
-            addOrUpdateRecentJob(currentJobs, updatedJob),
+            addBatchJobsToHistory(currentJobs, updatedBatch),
           )
           setJobError(null)
         }
       } catch {
         if (!cancelled) {
-          setJobError('Could not refresh the job status')
+          setJobError('Could not refresh the delivery status')
         }
       }
     }, 1000)
@@ -199,7 +242,7 @@ function App() {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [encodingJobId, encodingJobStatus, cancellingJobId])
+  }, [deliveryBatchId, hasActiveDelivery])
 
   // new file is selected
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -207,8 +250,7 @@ function App() {
 
     setSelectedFile(file)
     setVideoDetails(null) // clear old 
-    setShowAllSegments(false)
-    setEncodingJob(null)
+    setDeliveryBatch(null)
     setUploadProgress(0)
     setJobError(null)
     setVideoUrl(file ? URL.createObjectURL(file) : null)
@@ -232,30 +274,118 @@ function App() {
     })
   }
 
-  async function handleCreateJob() {
+  function updateDeliveryOutput(
+    outputId: string,
+    changes: Partial<DeliveryOutputRequest>,
+  ) {
+    setDeliveryOutputs((currentOutputs) =>
+      currentOutputs.map((output) =>
+        output.id === outputId ? { ...output, ...changes } : output,
+      ),
+    )
+  }
+
+  function addDeliveryOutput() {
+    // no more than 6 outputs
+    if (deliveryOutputs.length >= 6) {
+      return
+    }
+    // possible resolutions
+    const resolutions: OutputResolution[] = [
+      'original',
+      '1080p',
+      '720p',
+      '480p',
+    ]
+    const qualities: QualityProfile[] = ['high', 'balanced', 'compact']
+    const nextConfiguration = resolutions
+      .flatMap((resolution) =>
+        qualities.map((quality) => ({ resolution, quality })),
+      )
+      .find(
+        (configuration) =>
+          !deliveryOutputs.some(
+            (output) =>
+              output.resolution === configuration.resolution &&
+              output.quality === configuration.quality,
+          ),
+      )
+
+    if (!nextConfiguration) {
+      return
+    }
+
+    // change react state
+    setDeliveryOutputs((currentOutputs) => [
+      ...currentOutputs,
+      {
+        id: crypto.randomUUID(),  // unique browser id
+        name: `Output ${currentOutputs.length + 1}`,
+        ...nextConfiguration,
+      },
+    ])
+  }
+
+  function removeDeliveryOutput(outputId: string) {
+    setDeliveryOutputs((currentOutputs) =>
+      currentOutputs.length === 1
+        ? currentOutputs
+        : currentOutputs.filter((output) => output.id !== outputId),
+    )
+  }
+
+  async function handleCreateDelivery() {
     if (!selectedFile || !videoDetails) {
+      return
+    }
+
+    const outputs = deliveryOutputs.map(({ name, resolution, quality }) => ({ 
+      name: name.trim(),  // remove extra spaces
+      resolution,
+      quality,
+    }))
+    const names = outputs.map((output) => output.name.toLocaleLowerCase())
+    const configurations = outputs.map(
+      (output) => `${output.resolution}:${output.quality}`,
+    )
+
+    if (outputs.some((output) => output.name.length === 0)) {
+      setJobError('Every output needs a name')
+      return
+    }
+
+    if (new Set(names).size !== names.length) {
+      setJobError('Every output needs a unique name')
+      return
+    }
+
+    if (new Set(configurations).size !== configurations.length) {
+      setJobError('Every output needs a unique resolution and quality pair')
       return
     }
 
     setIsUploading(true)
     setUploadProgress(0)
-    setEncodingJob(null)
+    setDeliveryBatch(null)
     setJobError(null)
 
     try {
-      const job = await createEncodingJob({
+      const batch = await createDeliveryBatch({
         video: selectedFile,
         targetSegmentSeconds: TARGET_SEGMENT_SECONDS,
-        outputResolution,
-        quality,
+        outputs,
         onProgress: setUploadProgress,
       })
 
-      setEncodingJob(job)
-      setRecentJobs((currentJobs) => addOrUpdateRecentJob(currentJobs, job))
+      setDeliveryBatch(batch)
+      setRecentJobs((currentJobs) =>
+        addBatchJobsToHistory(currentJobs, batch),  // add to recent history
+      )
     } catch (error) {
       setJobError(
-        error instanceof Error ? error.message : 'Could not create the job',
+        error instanceof Error
+          ? error.message
+          : 'Could not create the delivery batch',
       )
     } finally {
       setIsUploading(false)
@@ -269,8 +399,18 @@ function App() {
 
     try {
       const cancelledJob = await cancelEncodingJob(job.job_id)
-      setEncodingJob((currentJob) =>
-        currentJob?.job_id === job.job_id ? cancelledJob : currentJob,
+      // replace the cancelled job
+      setDeliveryBatch((currentBatch) =>
+        currentBatch
+          ? {
+              ...currentBatch,
+              outputs: currentBatch.outputs.map((output) =>
+                output.job.job_id === job.job_id
+                  ? { ...output, job: cancelledJob }
+                  : output,
+              ),
+            }
+          : currentBatch,
       )
       setRecentJobs((currentJobs) =>
         addOrUpdateRecentJob(currentJobs, cancelledJob),
@@ -304,23 +444,23 @@ function App() {
 
       <section className="hero-section" id="top">
         <div className="hero-glow" aria-hidden="true" />
-        <p className="eyebrow">Distributed video encoding</p>
+        <p className="eyebrow">Multi-format video delivery</p>
         <h1>
-          One video.
+          One master.
           <br />
-          <span>A fleet of workers.</span>
+          <span>Every delivery format.</span>
         </h1>
         <p className="hero-copy">
-          Split large exports into independent segments, process them in
-          parallel, and assemble the result automatically.
+          Upload once, configure the versions you need, and let a fault-tolerant
+          worker fleet produce every export in parallel.
         </p>
         <a className="primary-button hero-action" href="#workspace">
           Create an export <span aria-hidden="true">↓</span>
         </a>
         <div className="feature-row" aria-label="FrameFleet features">
-          <span>Parallel segments</span>
+          <span>One source upload</span>
+          <span>Parallel renditions</span>
           <span>Automatic recovery</span>
-          <span>Durable job history</span>
         </div>
       </section>
 
@@ -330,7 +470,7 @@ function App() {
             <p className="eyebrow">Export workspace</p>
             <h2>Prepare your video</h2>
           </div>
-          <p>Select a source, verify its details, and configure the export.</p>
+          <p>Select a source and configure every file you need to deliver.</p>
         </div>
 
         <div className="workspace-grid">
@@ -402,11 +542,11 @@ function App() {
             <div className="card-heading">
               <div>
                 <p className="card-label">02 / Configure</p>
-                <h3>Export settings</h3>
+                <h3>Delivery outputs</h3>
               </div>
               {plannedSegments.length > 0 && (
                 <span className="segment-count">
-                  {plannedSegments.length} segments
+                  {deliveryOutputs.length} outputs
                 </span>
               )}
             </div>
@@ -418,78 +558,109 @@ function App() {
               </div>
             ) : (
               <>
-                <fieldset className="settings-fields" disabled={isUploading}>
-                  <label>
-                    <span>Resolution</span>
-                    <select
-                      value={outputResolution}
-                      onChange={(event) =>
-                        setOutputResolution(
-                          event.target.value as OutputResolution,
-                        )
-                      }
-                    >
-                      <option value="original">Original</option>
-                      <option value="1080p">1080p</option>
-                      <option value="720p">720p</option>
-                      <option value="480p">480p</option>
-                    </select>
-                  </label>
+                <fieldset className="output-list" disabled={isUploading}>
+                  <legend className="sr-only">Requested delivery outputs</legend>
 
-                  <label>
-                    <span>Quality</span>
-                    <select
-                      value={quality}
-                      onChange={(event) =>
-                        setQuality(event.target.value as QualityProfile)
-                      }
-                    >
-                      <option value="high">High quality</option>
-                      <option value="balanced">Balanced</option>
-                      <option value="compact">Smaller file</option>
-                    </select>
-                  </label>
+                  {deliveryOutputs.map((output, index) => (
+                    <div className="output-editor" key={output.id}>
+                      <div className="output-editor-heading">
+                        <span>Output {String(index + 1).padStart(2, '0')}</span>
+                        <button
+                          type="button"
+                          disabled={deliveryOutputs.length === 1}
+                          onClick={() => removeDeliveryOutput(output.id)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+
+                      <label className="output-name-field">
+                        <span>Name</span>
+                        <input
+                          type="text"
+                          value={output.name}
+                          maxLength={60}
+                          onChange={(event) =>
+                            updateDeliveryOutput(output.id, {
+                              name: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+
+                      <div className="output-selects">
+                        <label>
+                          <span>Resolution</span>
+                          <select
+                            value={output.resolution}
+                            onChange={(event) =>
+                              updateDeliveryOutput(output.id, {
+                                resolution: event.target
+                                  .value as OutputResolution,
+                              })
+                            }
+                          >
+                            <option value="original">Original</option>
+                            <option value="1080p">1080p</option>
+                            <option value="720p">720p</option>
+                            <option value="480p">480p</option>
+                          </select>
+                        </label>
+
+                        <label>
+                          <span>Quality</span>
+                          <select
+                            value={output.quality}
+                            onChange={(event) =>
+                              updateDeliveryOutput(output.id, {
+                                quality: event.target.value as QualityProfile,
+                              })
+                            }
+                          >
+                            <option value="high">High quality</option>
+                            <option value="balanced">Balanced</option>
+                            <option value="compact">Smaller file</option>
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+                  ))}
+
+                  <button
+                    className="add-output-button"
+                    type="button"
+                    disabled={deliveryOutputs.length >= 6}
+                    onClick={addDeliveryOutput}
+                  >
+                    <span aria-hidden="true">＋</span>
+                    {deliveryOutputs.length >= 6
+                      ? 'Maximum of 6 outputs'
+                      : 'Add another output'}
+                  </button>
                 </fieldset>
 
-                <div className="segment-plan">
-                  <div className="subheading-row">
-                    <h4>Segment plan</h4>
-                    <span>Up to {TARGET_SEGMENT_SECONDS}s each</span>
+                <div className="batch-plan">
+                  <div>
+                    <span>Worker tasks</span>
+                    <strong>
+                      {plannedSegments.length * deliveryOutputs.length}
+                    </strong>
                   </div>
-                  <ol className="segment-list">
-                    {visibleSegments.map((segment) => (
-                      <li key={segment.index}>
-                        <span>{String(segment.index + 1).padStart(2, '0')}</span>
-                        <strong>
-                          {segment.startSeconds.toFixed(1)}–
-                          {segment.endSeconds.toFixed(1)}s
-                        </strong>
-                      </li>
-                    ))}
-                  </ol>
-
-                  {plannedSegments.length > 5 && (
-                    <button
-                      className="text-button"
-                      type="button"
-                      onClick={() => setShowAllSegments((current) => !current)}
-                    >
-                      {showAllSegments
-                        ? 'Show fewer segments'
-                        : `Show all ${plannedSegments.length} segments`}
-                    </button>
-                  )}
+                  <p>
+                    {plannedSegments.length} segments per output, up to{' '}
+                    {TARGET_SEGMENT_SECONDS}s each
+                  </p>
                 </div>
 
                 <button
                   className="primary-button create-button"
                   type="button"
                   disabled={isUploading}
-                  onClick={handleCreateJob}
+                  onClick={handleCreateDelivery}
                 >
                   {isUploading
                     ? `Uploading ${uploadProgress}%`
-                    : 'Start distributed export'}
+                    : `Create ${deliveryOutputs.length} exports`}
                   <span aria-hidden="true">→</span>
                 </button>
 
@@ -514,119 +685,99 @@ function App() {
         </div>
       </section>
 
-      {encodingJob && (
+      {deliveryBatch && (
         <section className="content-section job-section" aria-live="polite">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Live export</p>
-              <h2>{encodingJob.file_name}</h2>
+              <p className="eyebrow">Live delivery</p>
+              <h2>{deliveryBatch.file_name}</h2>
             </div>
-            <span className={`status-badge status-${encodingJob.status}`}>
-              {STATUS_LABELS[encodingJob.status]}
+            <span className="batch-progress-chip">
+              {getBatchProgress(deliveryBatch)}% complete
             </span>
           </div>
 
-          <div className="glossy-card job-card">
-            <div className="job-progress-heading">
+          <div className="glossy-card batch-overview">
+            <div className="batch-progress-heading">
               <div>
-                <strong>{getJobProgress(encodingJob)}%</strong>
-                <span>overall progress</span>
+                <strong>{getBatchProgress(deliveryBatch)}%</strong>
+                <span>across {deliveryBatch.outputs.length} outputs</span>
               </div>
               <p>
-                {encodingJob.completed_segments} of {encodingJob.segment_count}{' '}
-                segments encoded
+                {
+                  deliveryBatch.outputs.filter(
+                    ({ job }) => job.status === 'completed',
+                  ).length
+                }{' '}
+                of {deliveryBatch.outputs.length} files ready
               </p>
             </div>
             <progress
               className="job-progress"
-              value={getJobProgress(encodingJob)}
+              value={getBatchProgress(deliveryBatch)}
               max="100"
             />
 
-            <div className="job-message-row">
-              <div>
-                {(encodingJob.status === 'ready' ||
-                  encodingJob.status === 'processing') && (
-                  <p>Workers are processing independent ranges in parallel.</p>
-                )}
-                {encodingJob.status === 'assembling' && (
-                  <p>All segments are ready. Assembling the final video…</p>
-                )}
-                {encodingJob.status === 'completed' && (
-                  <p>Your export is assembled and ready to download.</p>
-                )}
-                {encodingJob.status === 'failed' && (
-                  <p className="error-message" role="alert">
-                    The export could not be completed.
-                  </p>
-                )}
-                {encodingJob.status === 'cancelled' && (
-                  <p>This export was cancelled before completion.</p>
-                )}
-                {encodingJob.retry_count > 0 && (
-                  <span className="retry-note">
-                    {encodingJob.retry_count} worker{' '}
-                    {encodingJob.retry_count === 1 ? 'retry' : 'retries'}
-                  </span>
-                )}
-              </div>
+            <ol className="output-progress-list">
+              {deliveryBatch.outputs.map((output, index) => {
+                const job = output.job
 
-              {encodingJob.status === 'completed' && (
-                <a
-                  className="primary-button compact-button"
-                  href={getEncodingJobDownloadUrl(encodingJob.job_id)}
-                >
-                  Download export ↓
-                </a>
-              )}
+                return (
+                  <li className="output-job-card" key={job.job_id}>
+                    <div className="output-job-heading">
+                      <div>
+                        <span className="output-number">
+                          {String(index + 1).padStart(2, '0')}
+                        </span>
+                        <div>
+                          <h3>{output.name}</h3>
+                          <p>
+                            {job.export_settings?.resolution ?? 'original'} ·{' '}
+                            {job.export_settings?.quality ?? 'balanced'} quality
+                          </p>
+                        </div>
+                      </div>
+                      <span className={`status-badge status-${job.status}`}>
+                        {STATUS_LABELS[job.status]}
+                      </span>
+                    </div>
 
-              {(encodingJob.status === 'ready' ||
-                encodingJob.status === 'processing') && (
-                <button
-                  className="secondary-button compact-button"
-                  type="button"
-                  disabled={cancellingJobId === encodingJob.job_id}
-                  onClick={() => handleCancelJob(encodingJob)}
-                >
-                  {cancellingJobId === encodingJob.job_id
-                    ? 'Cancelling…'
-                    : 'Cancel export'}
-                </button>
-              )}
-            </div>
+                    <div className="output-job-progress">
+                      <progress value={getJobProgress(job)} max="100" />
+                      <span>{getJobProgress(job)}%</span>
+                    </div>
 
-            <dl className="job-detail-grid">
-              <div>
-                <dt>Export ID</dt>
-                <dd>{encodingJob.job_id.slice(0, 8)}</dd>
-              </div>
-              <div>
-                <dt>Output</dt>
-                <dd>
-                  {encodingJob.export_settings?.output_height
-                    ? `${encodingJob.export_settings.output_height}p`
-                    : 'Original'}
-                </dd>
-              </div>
-              <div>
-                <dt>Quality</dt>
-                <dd>{encodingJob.export_settings?.quality ?? 'Balanced'}</dd>
-              </div>
-              <div>
-                <dt>Source</dt>
-                <dd>
-                  {encodingJob.width} × {encodingJob.height}
-                </dd>
-              </div>
-              <div>
-                <dt>Codec</dt>
-                <dd>{encodingJob.video_codec}</dd>
-              </div>
-              <div>
-                <dt>Audio</dt>
-                <dd>{encodingJob.has_audio ? 'Included' : 'None'}</dd>
-              </div>
-            </dl>
+                    <div className="output-job-footer">
+                      <p>
+                        {job.completed_segments} of {job.segment_count} segments
+                        {job.retry_count > 0
+                          ? ` · ${job.retry_count} retries`
+                          : ''}
+                      </p>
+
+                      {job.status === 'completed' && (
+                        <a href={getEncodingJobDownloadUrl(job.job_id)}>
+                          Download ↓
+                        </a>
+                      )}
+
+                      {(job.status === 'ready' ||
+                        job.status === 'processing') && (
+                        <button
+                          type="button"
+                          disabled={cancellingJobId === job.job_id}
+                          onClick={() => handleCancelJob(job)}
+                        >
+                          {cancellingJobId === job.job_id
+                            ? 'Cancelling…'
+                            : 'Cancel'}
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                )
+              })}
+            </ol>
           </div>
         </section>
       )}
@@ -669,6 +820,8 @@ function App() {
                     </div>
                     <p>
                       {formatFileSize(job.file_size_bytes)} ·{' '}
+                      {job.export_settings?.resolution ?? 'original'} ·{' '}
+                      {job.export_settings?.quality ?? 'balanced'} ·{' '}
                       {job.segment_count} segments ·{' '}
                       {new Date(job.created_at).toLocaleString()}
                     </p>
