@@ -42,18 +42,21 @@ const DEFAULT_DELIVERY_OUTPUTS: DeliveryOutputDraft[] = [
     name: 'Archive master',
     resolution: 'original',
     quality: 'high',
+    max_file_size_mb: null,
   },
   {
     id: 'social-hd',
     name: 'Social HD',
     resolution: '1080p',
     quality: 'balanced',
+    max_file_size_mb: null,
   },
   {
     id: 'web-preview',
     name: 'Web preview',
     resolution: '720p',
     quality: 'compact',
+    max_file_size_mb: null,
   },
 ]
 
@@ -321,6 +324,7 @@ function App() {
       {
         id: crypto.randomUUID(),  // unique browser id
         name: `Output ${currentOutputs.length + 1}`,
+        max_file_size_mb: null,
         ...nextConfiguration,
       },
     ])
@@ -339,11 +343,14 @@ function App() {
       return
     }
 
-    const outputs = deliveryOutputs.map(({ name, resolution, quality }) => ({ 
-      name: name.trim(),  // remove extra spaces
-      resolution,
-      quality,
-    }))
+    const outputs = deliveryOutputs.map(
+      ({ name, resolution, quality, max_file_size_mb }) => ({
+        name: name.trim(), // remove extra spaces
+        resolution,
+        quality,
+        max_file_size_mb,
+      }),
+    )
     const names = outputs.map((output) => output.name.toLocaleLowerCase())
     const configurations = outputs.map(
       (output) => `${output.resolution}:${output.quality}`,
@@ -351,6 +358,19 @@ function App() {
 
     if (outputs.some((output) => output.name.length === 0)) {
       setJobError('Every output needs a name')
+      return
+    }
+
+    if (
+      outputs.some(
+        (output) =>
+          output.max_file_size_mb !== null &&
+          (!Number.isFinite(output.max_file_size_mb) ||
+            output.max_file_size_mb < 1 ||
+            output.max_file_size_mb > 50_000),
+      )
+    ) {
+      setJobError('Maximum file size must be between 1 and 50,000 MB')
       return
     }
 
@@ -623,6 +643,30 @@ function App() {
                           </select>
                         </label>
                       </div>
+
+                      <label className="output-size-field">
+                        <span>Maximum file size (MB, optional)</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="50000"
+                          step="1"
+                          placeholder="No size limit"
+                          value={output.max_file_size_mb ?? ''}
+                          onChange={(event) =>
+                            updateDeliveryOutput(output.id, {
+                              max_file_size_mb:
+                                event.target.value === ''
+                                  ? null
+                                  : Number(event.target.value),
+                            })
+                          }
+                        />
+                        <small>
+                          Leave blank for quality-based encoding. A limit uses a
+                          calculated bitrate budget.
+                        </small>
+                      </label>
                     </div>
                   ))}
 
@@ -734,6 +778,11 @@ function App() {
                           <p>
                             {job.export_settings?.resolution ?? 'original'} ·{' '}
                             {job.export_settings?.quality ?? 'balanced'} quality
+                            {job.size_constraint
+                              ? ` · ≤ ${formatFileSize(
+                                  job.size_constraint.target_size_bytes,
+                                )}`
+                              : ''}
                           </p>
                         </div>
                       </div>
@@ -752,6 +801,11 @@ function App() {
                         {job.completed_segments} of {job.segment_count} segments
                         {job.retry_count > 0
                           ? ` · ${job.retry_count} retries`
+                          : ''}
+                        {job.output_file_size_bytes !== null
+                          ? ` · ${formatFileSize(
+                              job.output_file_size_bytes,
+                            )} final`
                           : ''}
                       </p>
 
@@ -819,9 +873,17 @@ function App() {
                       </span>
                     </div>
                     <p>
-                      {formatFileSize(job.file_size_bytes)} ·{' '}
+                      {job.output_file_size_bytes !== null
+                        ? `${formatFileSize(job.output_file_size_bytes)} output`
+                        : `${formatFileSize(job.file_size_bytes)} source`}{' '}
+                      ·{' '}
                       {job.export_settings?.resolution ?? 'original'} ·{' '}
                       {job.export_settings?.quality ?? 'balanced'} ·{' '}
+                      {job.size_constraint
+                        ? `≤ ${formatFileSize(
+                            job.size_constraint.target_size_bytes,
+                          )} target · `
+                        : ''}
                       {job.segment_count} segments ·{' '}
                       {new Date(job.created_at).toLocaleString()}
                     </p>

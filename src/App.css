@@ -595,6 +595,7 @@ button:disabled,
 }
 
 .output-name-field,
+.output-size-field,
 .output-selects label {
   display: flex;
   flex-direction: column;
@@ -605,6 +606,7 @@ button:disabled,
 }
 
 .output-name-field input,
+.output-size-field input,
 .output-selects select {
   width: 100%;
   min-height: 42px;
@@ -614,6 +616,17 @@ button:disabled,
   background: #090909;
   color: #d2d2d2;
   font-size: 0.7rem;
+}
+
+.output-size-field {
+  margin-top: 10px;
+}
+
+.output-size-field small {
+  color: #555555;
+  font-size: 0.58rem;
+  font-weight: 450;
+  line-height: 1.45;
 }
 
 .output-selects {

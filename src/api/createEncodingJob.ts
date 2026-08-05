@@ -23,6 +23,12 @@ export type EncodingJob = {
     output_height: number | null
     quality: QualityProfile
   } | null
+  size_constraint: {
+    target_size_bytes: number
+    video_bitrate_bps: number
+    audio_bitrate_bps: number
+  } | null
+  output_file_size_bytes: number | null
   width: number
   height: number
   video_codec: string
@@ -34,6 +40,7 @@ export type DeliveryOutputRequest = {
   name: string
   resolution: OutputResolution
   quality: QualityProfile
+  max_file_size_mb: number | null
 }
 
 export type DeliveryOutput = {
