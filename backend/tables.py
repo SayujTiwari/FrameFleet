@@ -114,6 +114,20 @@ class EncodingSettingsRecord(Base):
     encoding_preset: Mapped[str] = mapped_column(String(32))
 
 
+# Optional final-size budget for an encoding job.
+class EncodingConstraintRecord(Base):
+    __tablename__ = "encoding_constraints"
+
+    job_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("encoding_jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    target_size_bytes: Mapped[int] = mapped_column(BigInteger)
+    video_bitrate_bps: Mapped[int] = mapped_column(BigInteger)
+    audio_bitrate_bps: Mapped[int] = mapped_column(Integer)
+
+
 # Lease and retry state kept separately
 class SegmentExecutionRecord(Base):
     __tablename__ = "segment_executions"

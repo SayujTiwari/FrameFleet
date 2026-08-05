@@ -25,11 +25,14 @@ from backend.models import (
     DeliveryOutputResponse,
     EncodingJobResponse,
     ExportSettingsResponse,
+    ExportSizeConstraintResponse,
 )
 from backend.probe import MediaProbeError, VideoProbe, probe_video
+from backend.size_constraints import SizeConstraintError, calculate_size_budget
 from backend.tables import (
     DeliveryBatchRecord,
     DeliveryOutputRecord,
+    EncodingConstraintRecord,
     EncodingJobRecord,
     EncodingSegmentRecord,
     EncodingSettingsRecord,
@@ -158,6 +161,22 @@ def build_job_responses(
             )
         ).all()
     }
+    constraints_by_job = {
+        constraint.job_id: constraint
+        for constraint in session.scalars(
+            select(EncodingConstraintRecord).where(
+                EncodingConstraintRecord.job_id.in_(job_ids)
+            )
+        ).all()
+    }
+    delivery_outputs_by_job = {
+        output.job_id: output
+        for output in session.scalars(
+            select(DeliveryOutputRecord).where(
+                DeliveryOutputRecord.job_id.in_(job_ids)
+            )
+        ).all()
+    }
     retry_counts_by_job = dict.fromkeys(job_ids, 0)
 
     attempt_counts = session.execute(
@@ -174,6 +193,24 @@ def build_job_responses(
 
     for job in jobs:
         settings = settings_by_job.get(job.job_id)
+        constraint = constraints_by_job.get(job.job_id)
+        delivery_output = delivery_outputs_by_job.get(job.job_id)
+        output_directory = (
+            Path(delivery_output.output_directory)
+            if delivery_output is not None
+            else Path(job.source_path).parent
+        )
+        output_path = output_directory / "output.mp4"
+
+        try:
+            output_file_size_bytes = (
+                output_path.stat().st_size
+                if job.status == "completed"
+                else None
+            )
+        except OSError:
+            output_file_size_bytes = None
+
         responses.append(
             EncodingJobResponse.model_validate(job).model_copy(
                 update={
@@ -187,6 +224,12 @@ def build_job_responses(
                         if settings is not None
                         else None
                     ),
+                    "size_constraint": (
+                        ExportSizeConstraintResponse.model_validate(constraint)
+                        if constraint is not None
+                        else None
+                    ),
+                    "output_file_size_bytes": output_file_size_bytes,
                 }
             )
         )
@@ -212,6 +255,7 @@ def add_encoding_job_records(
     target_segment_seconds: float,
     output_resolution: Literal["original", "1080p", "720p", "480p"],
     quality: Literal["high", "balanced", "compact"],
+    max_file_size_mb: float | None = None,
 ) -> EncodingJobRecord:
     segment_count = ceil(probe.duration_seconds / target_segment_seconds)
     requested_height = OUTPUT_HEIGHTS[output_resolution]
@@ -247,6 +291,15 @@ def add_encoding_job_records(
         video_crf=profile.crf,
         encoding_preset=profile.preset,
     )
+    size_budget = (
+        calculate_size_budget(
+            duration_seconds=probe.duration_seconds,
+            max_file_size_mb=max_file_size_mb,
+            has_audio=probe.has_audio,
+        )
+        if max_file_size_mb is not None
+        else None
+    )
     segments = [
         EncodingSegmentRecord(
             job_id=job_id,
@@ -262,8 +315,22 @@ def add_encoding_job_records(
         for index in range(segment_count)
     ]
 
+    # Insert the parent job before its settings, constraints, and segments.
+    # A flush sends SQL without committing, so a later rollback remains atomic.
     session.add(job)
+    session.flush()
     session.add(settings)
+
+    if size_budget is not None:
+        session.add(
+            EncodingConstraintRecord(
+                job_id=job_id,
+                target_size_bytes=size_budget.target_size_bytes,
+                video_bitrate_bps=size_budget.video_bitrate_bps,
+                audio_bitrate_bps=size_budget.audio_bitrate_bps,
+            )
+        )
+
     session.add_all(segments)
     session.add_all(
         SegmentExecutionRecord(
@@ -412,6 +479,7 @@ def create_delivery_batch(
                 target_segment_seconds=target_segment_seconds,
                 output_resolution=requested_output.resolution,
                 quality=requested_output.quality,
+                max_file_size_mb=requested_output.max_file_size_mb,
             )
             output_records.append(
                 DeliveryOutputRecord(
@@ -428,6 +496,10 @@ def create_delivery_batch(
         session.flush()
         session.add_all(output_records)
         session.commit()
+    except SizeConstraintError as error:
+        session.rollback()
+        rmtree(source_path.parent, ignore_errors=True)
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except (OSError, SQLAlchemyError) as error:
         session.rollback()
         rmtree(source_path.parent, ignore_errors=True)

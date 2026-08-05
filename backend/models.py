@@ -14,6 +14,14 @@ class ExportSettingsResponse(BaseModel):
     quality: Literal["high", "balanced", "compact"]
 
 
+class ExportSizeConstraintResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    target_size_bytes: int
+    video_bitrate_bps: int
+    audio_bitrate_bps: int
+
+
 class EncodingJobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -35,6 +43,8 @@ class EncodingJobResponse(BaseModel):
     completed_segments: int = 0
     retry_count: int = 0
     export_settings: ExportSettingsResponse | None = None
+    size_constraint: ExportSizeConstraintResponse | None = None
+    output_file_size_bytes: int | None = None
     width: int
     height: int
     video_codec: str
@@ -48,6 +58,7 @@ class DeliveryOutputRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     resolution: Literal["original", "1080p", "720p", "480p"]
     quality: Literal["high", "balanced", "compact"]
+    max_file_size_mb: float | None = Field(default=None, ge=1, le=50_000)
 
 
 class DeliveryOutputResponse(BaseModel):

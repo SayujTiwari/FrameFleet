@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from backend.database import SessionLocal
 from backend.tables import (
     DeliveryOutputRecord,
+    EncodingConstraintRecord,
     EncodingJobRecord,
     EncodingSegmentRecord,
     EncodingSettingsRecord,
@@ -42,6 +43,7 @@ class ClaimedSegment:
     output_height: int | None
     video_crf: int
     encoding_preset: str
+    target_video_bitrate_bps: int | None
     attempt_number: int
     worker_id: str
     reclaimed: bool
@@ -121,6 +123,7 @@ def claim_next_segment(session: Session) -> ClaimedSegment | None:
     segment, execution = row
     job = session.get(EncodingJobRecord, segment.job_id)
     settings = session.get(EncodingSettingsRecord, segment.job_id)
+    constraint = session.get(EncodingConstraintRecord, segment.job_id)
     delivery_output = session.get(DeliveryOutputRecord, segment.job_id)
 
     if job is None:
@@ -148,6 +151,9 @@ def claim_next_segment(session: Session) -> ClaimedSegment | None:
         output_height=settings.output_height if settings else None,
         video_crf=settings.video_crf if settings else 23,
         encoding_preset=settings.encoding_preset if settings else "veryfast",
+        target_video_bitrate_bps=(
+            constraint.video_bitrate_bps if constraint is not None else None
+        ),
         attempt_number=execution.attempt_count,
         worker_id=WORKER_ID,
         reclaimed=reclaimed,
@@ -254,15 +260,32 @@ def encode_segment(segment: ClaimedSegment) -> Path:
         ),
         "-c:v",
         "libx264",
-        "-crf",
-        str(segment.video_crf),
-        "-preset",
-        segment.encoding_preset,
-        "-pix_fmt",
-        "yuv420p",
-        "-y",
-        str(temporary_path),
     ]
+
+    if segment.target_video_bitrate_bps is not None:
+        command.extend(
+            [
+                "-b:v",
+                str(segment.target_video_bitrate_bps),
+                "-maxrate",
+                str(round(segment.target_video_bitrate_bps * 1.25)),
+                "-bufsize",
+                str(segment.target_video_bitrate_bps * 2),
+            ]
+        )
+    else:
+        command.extend(["-crf", str(segment.video_crf)])
+
+    command.extend(
+        [
+            "-preset",
+            segment.encoding_preset,
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+            str(temporary_path),
+        ]
+    )
 
     try:
         return_code, stderr = run_ffmpeg_with_heartbeat(command, segment)
@@ -422,6 +445,7 @@ def assemble_job(job_id: UUID) -> Path:
     with SessionLocal() as session:
         job = session.get(EncodingJobRecord, job_id)
         delivery_output = session.get(DeliveryOutputRecord, job_id)
+        constraint = session.get(EncodingConstraintRecord, job_id)
         segment_paths = session.scalars(
             select(EncodingSegmentRecord.output_path)
             .where(
@@ -473,13 +497,21 @@ def assemble_job(job_id: UUID) -> Path:
         "copy",
         "-c:a",
         "aac",
-        "-t",
-        str(job.duration_seconds),
-        "-movflags",
-        "+faststart",
-        "-y",
-        str(temporary_path),
     ]
+
+    if constraint is not None and constraint.audio_bitrate_bps > 0:
+        command.extend(["-b:a", str(constraint.audio_bitrate_bps)])
+
+    command.extend(
+        [
+            "-t",
+            str(job.duration_seconds),
+            "-movflags",
+            "+faststart",
+            "-y",
+            str(temporary_path),
+        ]
+    )
 
     try:
         result = subprocess.run(
