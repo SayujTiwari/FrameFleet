@@ -128,6 +128,22 @@ class EncodingConstraintRecord(Base):
     audio_bitrate_bps: Mapped[int] = mapped_column(Integer)
 
 
+# Tracks deliberate re-encodes used to meet a final-size target.
+class EncodingOptimizationRecord(Base):
+    __tablename__ = "encoding_optimizations"
+
+    job_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("encoding_jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    adjustment_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_output_size_bytes: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+
 # Lease and retry state kept separately
 class SegmentExecutionRecord(Base):
     __tablename__ = "segment_executions"

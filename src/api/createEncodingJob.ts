@@ -27,6 +27,8 @@ export type EncodingJob = {
     target_size_bytes: number
     video_bitrate_bps: number
     audio_bitrate_bps: number
+    adjustment_count: number
+    last_output_size_bytes: number | null
   } | null
   output_file_size_bytes: number | null
   width: number

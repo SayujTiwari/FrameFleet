@@ -802,6 +802,11 @@ function App() {
                         {job.retry_count > 0
                           ? ` · ${job.retry_count} retries`
                           : ''}
+                        {job.size_constraint?.adjustment_count
+                          ? ` · size pass ${
+                              job.size_constraint.adjustment_count + 1
+                            }`
+                          : ''}
                         {job.output_file_size_bytes !== null
                           ? ` · ${formatFileSize(
                               job.output_file_size_bytes,
@@ -883,6 +888,9 @@ function App() {
                         ? `≤ ${formatFileSize(
                             job.size_constraint.target_size_bytes,
                           )} target · `
+                        : ''}
+                      {job.size_constraint?.adjustment_count
+                        ? `${job.size_constraint.adjustment_count} size adjustment · `
                         : ''}
                       {job.segment_count} segments ·{' '}
                       {new Date(job.created_at).toLocaleString()}

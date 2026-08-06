@@ -11,10 +11,12 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.database import SessionLocal
+from backend.size_constraints import calculate_adjusted_video_bitrate
 from backend.tables import (
     DeliveryOutputRecord,
     EncodingConstraintRecord,
     EncodingJobRecord,
+    EncodingOptimizationRecord,
     EncodingSegmentRecord,
     EncodingSettingsRecord,
     SegmentExecutionRecord,
@@ -28,6 +30,7 @@ LEASE_DURATION_SECONDS = max(
 )
 HEARTBEAT_INTERVAL_SECONDS = max(1, LEASE_DURATION_SECONDS // 3)
 MAX_ATTEMPTS = max(1, int(os.environ.get("FRAMEFLEET_MAX_ATTEMPTS", "3")))
+MAX_SIZE_ADJUSTMENTS = 1
 WORKER_ID = os.environ.get("FRAMEFLEET_WORKER_ID", socket.gethostname())
 
 
@@ -53,6 +56,14 @@ class ClaimedSegment:
 class CompletionResult:
     accepted: bool
     should_assemble: bool
+
+
+@dataclass(frozen=True)
+class SizeVerificationResult:
+    action: str
+    actual_size_bytes: int
+    target_size_bytes: int | None
+    adjusted_video_bitrate_bps: int | None = None
 
 
 class EncodingError(Exception):
@@ -400,6 +411,7 @@ def finish_segment_failure(segment: ClaimedSegment, error: str) -> str:
             .where(EncodingJobRecord.job_id == segment.job_id)
             .with_for_update()
         )
+        optimization = session.get(EncodingOptimizationRecord, segment.job_id)
 
         if (
             execution is None
@@ -424,8 +436,13 @@ def finish_segment_failure(segment: ClaimedSegment, error: str) -> str:
             )
         )
 
+        adjustment_count = (
+            optimization.adjustment_count if optimization is not None else 0
+        )
+        maximum_attempts = MAX_ATTEMPTS * (adjustment_count + 1)
+
         if (
-            execution.attempt_count < MAX_ATTEMPTS
+            execution.attempt_count < maximum_attempts
             and not another_segment_failed
             and job.status != "failed"
         ):
@@ -534,6 +551,113 @@ def assemble_job(job_id: UUID) -> Path:
     return output_path
 
 
+# verify output and automatically try again if wrong
+def verify_output_size(job_id: UUID, output_path: Path) -> SizeVerificationResult:
+    try:
+        actual_size_bytes = output_path.stat().st_size
+    except OSError as error:
+        raise EncodingError("Could not measure the assembled export") from error
+
+    with SessionLocal() as session:
+        constraint = session.scalar(
+            select(EncodingConstraintRecord)
+            .where(EncodingConstraintRecord.job_id == job_id)
+            .with_for_update()
+        )
+
+        if constraint is None:
+            return SizeVerificationResult(
+                action="accepted",
+                actual_size_bytes=actual_size_bytes,
+                target_size_bytes=None,
+            )
+
+        job = session.scalar(
+            select(EncodingJobRecord)
+            .where(EncodingJobRecord.job_id == job_id)
+            .with_for_update()
+        )
+        optimization = session.scalar(
+            select(EncodingOptimizationRecord)
+            .where(EncodingOptimizationRecord.job_id == job_id)
+            .with_for_update()
+        )
+
+        if job is None:
+            raise EncodingError("Encoding job disappeared during verification")
+
+        if optimization is None:
+            optimization = EncodingOptimizationRecord(
+                job_id=job_id,
+                adjustment_count=0,
+            )
+            session.add(optimization)
+
+        optimization.last_output_size_bytes = actual_size_bytes
+
+        if actual_size_bytes <= constraint.target_size_bytes:
+            session.commit()
+            return SizeVerificationResult(
+                action="accepted",
+                actual_size_bytes=actual_size_bytes,
+                target_size_bytes=constraint.target_size_bytes,
+            )
+
+        if optimization.adjustment_count >= MAX_SIZE_ADJUSTMENTS:
+            session.commit()
+            return SizeVerificationResult(
+                action="limit_missed",
+                actual_size_bytes=actual_size_bytes,
+                target_size_bytes=constraint.target_size_bytes,
+            )
+
+        adjusted_bitrate = calculate_adjusted_video_bitrate(
+            current_video_bitrate_bps=constraint.video_bitrate_bps,
+            target_size_bytes=constraint.target_size_bytes,
+            actual_size_bytes=actual_size_bytes,
+        )
+
+        if adjusted_bitrate >= constraint.video_bitrate_bps:
+            session.commit()
+            return SizeVerificationResult(
+                action="limit_missed",
+                actual_size_bytes=actual_size_bytes,
+                target_size_bytes=constraint.target_size_bytes,
+            )
+
+        constraint.video_bitrate_bps = adjusted_bitrate
+        optimization.adjustment_count += 1
+
+        segments = session.scalars(
+            select(EncodingSegmentRecord)
+            .where(EncodingSegmentRecord.job_id == job_id)
+            .with_for_update()
+        ).all()
+        executions = session.scalars(
+            select(SegmentExecutionRecord)
+            .where(SegmentExecutionRecord.job_id == job_id)
+            .with_for_update()
+        ).all()
+
+        for segment in segments:
+            segment.status = "pending"
+            segment.output_path = None
+
+        for execution in executions:
+            execution.leased_by = None
+            execution.lease_expires_at = None
+
+        job.status = "ready"
+        session.commit()
+
+        return SizeVerificationResult(
+            action="retrying",
+            actual_size_bytes=actual_size_bytes,
+            target_size_bytes=constraint.target_size_bytes,
+            adjusted_video_bitrate_bps=adjusted_bitrate,
+        )
+
+
 def finish_assembly(job_id: UUID, status: str) -> None:
     with SessionLocal() as session:
         job = session.scalar(
@@ -581,10 +705,29 @@ def process_next_segment() -> bool:
 
         try:
             final_path = assemble_job(segment.job_id)
+            verification = verify_output_size(segment.job_id, final_path)
         except EncodingError as error:
             print(f"Job {segment.job_id} assembly failed: {error}", flush=True)
             finish_assembly(segment.job_id, "failed")
             return True
+
+        if verification.action == "retrying":
+            print(
+                f"Job {segment.job_id} exceeded "
+                f"{verification.target_size_bytes} bytes at "
+                f"{verification.actual_size_bytes} bytes; re-encoding at "
+                f"{verification.adjusted_video_bitrate_bps} bps",
+                flush=True,
+            )
+            return True
+
+        if verification.action == "limit_missed":
+            print(
+                f"Job {segment.job_id} still exceeds its target after "
+                f"verification ({verification.actual_size_bytes} > "
+                f"{verification.target_size_bytes} bytes)",
+                flush=True,
+            )
 
         finish_assembly(segment.job_id, "completed")
         print(f"Job {segment.job_id} completed at {final_path}", flush=True)

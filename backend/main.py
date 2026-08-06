@@ -34,6 +34,7 @@ from backend.tables import (
     DeliveryOutputRecord,
     EncodingConstraintRecord,
     EncodingJobRecord,
+    EncodingOptimizationRecord,
     EncodingSegmentRecord,
     EncodingSettingsRecord,
     SegmentExecutionRecord,
@@ -71,10 +72,33 @@ def backfill_segment_executions() -> None:
         session.commit()
 
 
+def backfill_encoding_optimizations() -> None:
+    with SessionLocal() as session:
+        constrained_job_ids = session.scalars(
+            select(EncodingConstraintRecord.job_id)
+            .outerjoin(
+                EncodingOptimizationRecord,
+                EncodingOptimizationRecord.job_id
+                == EncodingConstraintRecord.job_id,
+            )
+            .where(EncodingOptimizationRecord.job_id.is_(None))
+        ).all()
+
+        session.add_all(
+            EncodingOptimizationRecord(
+                job_id=job_id,
+                adjustment_count=0,
+            )
+            for job_id in constrained_job_ids
+        )
+        session.commit()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     backfill_segment_executions()
+    backfill_encoding_optimizations()
     yield
 
 
@@ -169,6 +193,14 @@ def build_job_responses(
             )
         ).all()
     }
+    optimizations_by_job = {
+        optimization.job_id: optimization
+        for optimization in session.scalars(
+            select(EncodingOptimizationRecord).where(
+                EncodingOptimizationRecord.job_id.in_(job_ids)
+            )
+        ).all()
+    }
     delivery_outputs_by_job = {
         output.job_id: output
         for output in session.scalars(
@@ -187,13 +219,21 @@ def build_job_responses(
     ).all()
 
     for job_id, attempt_count in attempt_counts:
-        retry_counts_by_job[job_id] += max(0, attempt_count - 1)
+        optimization = optimizations_by_job.get(job_id)
+        adjustment_count = (
+            optimization.adjustment_count if optimization is not None else 0
+        )
+        retry_counts_by_job[job_id] += max(
+            0,
+            attempt_count - 1 - adjustment_count,
+        )
 
     responses = []
 
     for job in jobs:
         settings = settings_by_job.get(job.job_id)
         constraint = constraints_by_job.get(job.job_id)
+        optimization = optimizations_by_job.get(job.job_id)
         delivery_output = delivery_outputs_by_job.get(job.job_id)
         output_directory = (
             Path(delivery_output.output_directory)
@@ -225,7 +265,22 @@ def build_job_responses(
                         else None
                     ),
                     "size_constraint": (
-                        ExportSizeConstraintResponse.model_validate(constraint)
+                        ExportSizeConstraintResponse.model_validate(
+                            constraint
+                        ).model_copy(
+                            update={
+                                "adjustment_count": (
+                                    optimization.adjustment_count
+                                    if optimization is not None
+                                    else 0
+                                ),
+                                "last_output_size_bytes": (
+                                    optimization.last_output_size_bytes
+                                    if optimization is not None
+                                    else None
+                                ),
+                            }
+                        )
                         if constraint is not None
                         else None
                     ),
@@ -322,13 +377,19 @@ def add_encoding_job_records(
     session.add(settings)
 
     if size_budget is not None:
-        session.add(
-            EncodingConstraintRecord(
-                job_id=job_id,
-                target_size_bytes=size_budget.target_size_bytes,
-                video_bitrate_bps=size_budget.video_bitrate_bps,
-                audio_bitrate_bps=size_budget.audio_bitrate_bps,
-            )
+        session.add_all(
+            [
+                EncodingConstraintRecord(
+                    job_id=job_id,
+                    target_size_bytes=size_budget.target_size_bytes,
+                    video_bitrate_bps=size_budget.video_bitrate_bps,
+                    audio_bitrate_bps=size_budget.audio_bitrate_bps,
+                ),
+                EncodingOptimizationRecord(
+                    job_id=job_id,
+                    adjustment_count=0,
+                ),
+            ]
         )
 
     session.add_all(segments)

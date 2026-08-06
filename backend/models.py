@@ -20,6 +20,8 @@ class ExportSizeConstraintResponse(BaseModel):
     target_size_bytes: int
     video_bitrate_bps: int
     audio_bitrate_bps: int
+    adjustment_count: int = 0
+    last_output_size_bytes: int | None = None
 
 
 class EncodingJobResponse(BaseModel):
