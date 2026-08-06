@@ -98,6 +98,16 @@ function formatFileSize(sizeBytes: number): string {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function formatElapsedTime(seconds: number): string {
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)}s`
+  }
+
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = Math.round(seconds % 60)
+  return `${minutes}m ${remainingSeconds}s`
+}
+
 // insert and sort by newest
 function addOrUpdateRecentJob(
   jobs: EncodingJob[],
@@ -812,6 +822,16 @@ function App() {
                               job.output_file_size_bytes,
                             )} final`
                           : ''}
+                        {job.performance?.elapsed_seconds != null
+                          ? ` · ${formatElapsedTime(
+                              job.performance.elapsed_seconds,
+                            )}`
+                          : ''}
+                        {job.performance?.realtime_multiplier != null
+                          ? ` · ${job.performance.realtime_multiplier.toFixed(
+                              2,
+                            )}× realtime`
+                          : ''}
                       </p>
 
                       {job.status === 'completed' && (
@@ -891,6 +911,16 @@ function App() {
                         : ''}
                       {job.size_constraint?.adjustment_count
                         ? `${job.size_constraint.adjustment_count} size adjustment · `
+                        : ''}
+                      {job.performance?.elapsed_seconds != null
+                        ? `${formatElapsedTime(
+                            job.performance.elapsed_seconds,
+                          )} processing · `
+                        : ''}
+                      {job.performance?.realtime_multiplier != null
+                        ? `${job.performance.realtime_multiplier.toFixed(
+                            2,
+                          )}× realtime · `
                         : ''}
                       {job.segment_count} segments ·{' '}
                       {new Date(job.created_at).toLocaleString()}

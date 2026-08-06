@@ -30,6 +30,12 @@ export type EncodingJob = {
     adjustment_count: number
     last_output_size_bytes: number | null
   } | null
+  performance: {
+    started_at: string | null
+    finished_at: string | null
+    elapsed_seconds: number | null
+    realtime_multiplier: number | null
+  } | null
   output_file_size_bytes: number | null
   width: number
   height: number

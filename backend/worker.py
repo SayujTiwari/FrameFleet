@@ -17,6 +17,7 @@ from backend.tables import (
     EncodingConstraintRecord,
     EncodingJobRecord,
     EncodingOptimizationRecord,
+    EncodingPerformanceRecord,
     EncodingSegmentRecord,
     EncodingSettingsRecord,
     SegmentExecutionRecord,
@@ -139,6 +140,19 @@ def claim_next_segment(session: Session) -> ClaimedSegment | None:
 
     if job is None:
         return None
+
+    performance = session.scalar(
+        select(EncodingPerformanceRecord)
+        .where(EncodingPerformanceRecord.job_id == job.job_id)
+        .with_for_update()
+    )
+
+    if performance is None:
+        performance = EncodingPerformanceRecord(job_id=job.job_id)
+        session.add(performance)
+
+    if performance.started_at is None:
+        performance.started_at = now
 
     reclaimed = segment.status == "processing"
     execution.attempt_count += 1
@@ -454,6 +468,18 @@ def finish_segment_failure(segment: ClaimedSegment, error: str) -> str:
             job.status = "failed"
             outcome = "failed"
 
+            performance = session.scalar(
+                select(EncodingPerformanceRecord)
+                .where(EncodingPerformanceRecord.job_id == segment.job_id)
+                .with_for_update()
+            )
+
+            if performance is None:
+                performance = EncodingPerformanceRecord(job_id=segment.job_id)
+                session.add(performance)
+
+            performance.finished_at = database_time(session)
+
         session.commit()
         return outcome
 
@@ -669,7 +695,18 @@ def finish_assembly(job_id: UUID, status: str) -> None:
         if job is None:
             return
 
+        performance = session.scalar(
+            select(EncodingPerformanceRecord)
+            .where(EncodingPerformanceRecord.job_id == job_id)
+            .with_for_update()
+        )
+
+        if performance is None:
+            performance = EncodingPerformanceRecord(job_id=job_id)
+            session.add(performance)
+
         job.status = status
+        performance.finished_at = database_time(session)
         session.commit()
 
 

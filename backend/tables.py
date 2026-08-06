@@ -144,6 +144,25 @@ class EncodingOptimizationRecord(Base):
     )
 
 
+# Wall-clock timing for benchmarking an encoding job.
+class EncodingPerformanceRecord(Base):
+    __tablename__ = "encoding_performance"
+
+    job_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("encoding_jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
 # Lease and retry state kept separately
 class SegmentExecutionRecord(Base):
     __tablename__ = "segment_executions"

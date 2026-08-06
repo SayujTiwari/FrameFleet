@@ -24,9 +24,11 @@ from backend.models import (
     DeliveryOutputRequest,
     DeliveryOutputResponse,
     EncodingJobResponse,
+    EncodingPerformanceResponse,
     ExportSettingsResponse,
     ExportSizeConstraintResponse,
 )
+from backend.performance import calculate_performance_metrics
 from backend.probe import MediaProbeError, VideoProbe, probe_video
 from backend.size_constraints import SizeConstraintError, calculate_size_budget
 from backend.tables import (
@@ -35,6 +37,7 @@ from backend.tables import (
     EncodingConstraintRecord,
     EncodingJobRecord,
     EncodingOptimizationRecord,
+    EncodingPerformanceRecord,
     EncodingSegmentRecord,
     EncodingSettingsRecord,
     SegmentExecutionRecord,
@@ -94,11 +97,30 @@ def backfill_encoding_optimizations() -> None:
         session.commit()
 
 
+def backfill_encoding_performance() -> None:
+    with SessionLocal() as session:
+        missing_job_ids = session.scalars(
+            select(EncodingJobRecord.job_id)
+            .outerjoin(
+                EncodingPerformanceRecord,
+                EncodingPerformanceRecord.job_id == EncodingJobRecord.job_id,
+            )
+            .where(EncodingPerformanceRecord.job_id.is_(None))
+        ).all()
+
+        session.add_all(
+            EncodingPerformanceRecord(job_id=job_id)
+            for job_id in missing_job_ids
+        )
+        session.commit()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     backfill_segment_executions()
     backfill_encoding_optimizations()
+    backfill_encoding_performance()
     yield
 
 
@@ -201,6 +223,14 @@ def build_job_responses(
             )
         ).all()
     }
+    performance_by_job = {
+        performance.job_id: performance
+        for performance in session.scalars(
+            select(EncodingPerformanceRecord).where(
+                EncodingPerformanceRecord.job_id.in_(job_ids)
+            )
+        ).all()
+    }
     delivery_outputs_by_job = {
         output.job_id: output
         for output in session.scalars(
@@ -210,6 +240,10 @@ def build_job_responses(
         ).all()
     }
     retry_counts_by_job = dict.fromkeys(job_ids, 0)
+    measured_at = session.scalar(select(func.now()))
+
+    if measured_at is None:
+        raise RuntimeError("Database did not return its current time")
 
     attempt_counts = session.execute(
         select(
@@ -234,6 +268,7 @@ def build_job_responses(
         settings = settings_by_job.get(job.job_id)
         constraint = constraints_by_job.get(job.job_id)
         optimization = optimizations_by_job.get(job.job_id)
+        performance = performance_by_job.get(job.job_id)
         delivery_output = delivery_outputs_by_job.get(job.job_id)
         output_directory = (
             Path(delivery_output.output_directory)
@@ -250,6 +285,18 @@ def build_job_responses(
             )
         except OSError:
             output_file_size_bytes = None
+
+        performance_metrics = (
+            calculate_performance_metrics(
+                media_duration_seconds=job.duration_seconds,
+                started_at=performance.started_at,
+                finished_at=performance.finished_at,
+                measured_at=measured_at,
+                completed=job.status == "completed",
+            )
+            if performance is not None
+            else None
+        )
 
         responses.append(
             EncodingJobResponse.model_validate(job).model_copy(
@@ -282,6 +329,26 @@ def build_job_responses(
                             }
                         )
                         if constraint is not None
+                        else None
+                    ),
+                    "performance": (
+                        EncodingPerformanceResponse.model_validate(
+                            performance
+                        ).model_copy(
+                            update={
+                                "elapsed_seconds": (
+                                    performance_metrics.elapsed_seconds
+                                    if performance_metrics is not None
+                                    else None
+                                ),
+                                "realtime_multiplier": (
+                                    performance_metrics.realtime_multiplier
+                                    if performance_metrics is not None
+                                    else None
+                                ),
+                            }
+                        )
+                        if performance is not None
                         else None
                     ),
                     "output_file_size_bytes": output_file_size_bytes,
@@ -375,6 +442,7 @@ def add_encoding_job_records(
     session.add(job)
     session.flush()
     session.add(settings)
+    session.add(EncodingPerformanceRecord(job_id=job_id))
 
     if size_budget is not None:
         session.add_all(
@@ -715,6 +783,18 @@ def cancel_encoding_job(
     for execution in executions:
         execution.leased_by = None
         execution.lease_expires_at = None
+
+    performance = session.scalar(
+        select(EncodingPerformanceRecord)
+        .where(EncodingPerformanceRecord.job_id == job_id)
+        .with_for_update()
+    )
+
+    if performance is None:
+        performance = EncodingPerformanceRecord(job_id=job_id)
+        session.add(performance)
+
+    performance.finished_at = session.scalar(select(func.now()))
 
     job.status = "cancelled"
     session.commit()

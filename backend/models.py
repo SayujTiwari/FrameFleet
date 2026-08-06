@@ -24,6 +24,15 @@ class ExportSizeConstraintResponse(BaseModel):
     last_output_size_bytes: int | None = None
 
 
+class EncodingPerformanceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    started_at: datetime | None
+    finished_at: datetime | None
+    elapsed_seconds: float | None = None
+    realtime_multiplier: float | None = None
+
+
 class EncodingJobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -46,6 +55,7 @@ class EncodingJobResponse(BaseModel):
     retry_count: int = 0
     export_settings: ExportSettingsResponse | None = None
     size_constraint: ExportSizeConstraintResponse | None = None
+    performance: EncodingPerformanceResponse | None = None
     output_file_size_bytes: int | None = None
     width: int
     height: int
