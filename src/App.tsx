@@ -257,6 +257,40 @@ function App() {
     }
   }, [deliveryBatchId, hasActiveDelivery])
 
+  useEffect(() => {
+    const sections = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-reveal]'),
+    ).filter((section) => !section.classList.contains('is-visible'))
+
+    if (
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches ||
+      !('IntersectionObserver' in window)
+    ) {
+      sections.forEach((section) => section.classList.add('is-visible'))
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) {
+            return
+          }
+
+          entry.target.classList.add('is-visible')
+          observer.unobserve(entry.target)
+        })
+      },
+      {
+        rootMargin: '0px 0px -8% 0px',
+        threshold: 0.12,
+      },
+    )
+
+    sections.forEach((section) => observer.observe(section))
+    return () => observer.disconnect()
+  }, [deliveryBatchId, recentJobs.length])
+
   // new file is selected
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null
@@ -494,8 +528,81 @@ function App() {
         </div>
       </section>
 
-      <section className="content-section" id="workspace">
-        <div className="section-heading">
+      <section
+        className="content-section pipeline-section reveal-section"
+        data-reveal
+      >
+        <div className="section-heading reveal-child">
+          <div>
+            <p className="eyebrow">Inside the fleet</p>
+            <h2>From master to delivery</h2>
+          </div>
+          <p>
+            Every export moves through the same measurable, fault-tolerant
+            pipeline.
+          </p>
+        </div>
+
+        <div
+          className="pipeline-grid"
+          aria-label="FrameFleet processing pipeline"
+        >
+          <article className="pipeline-step reveal-child" data-step="01">
+            <div className="pipeline-step-heading">
+              <span>01</span>
+              <span>Inspect</span>
+            </div>
+            <h3>Probe the master</h3>
+            <p>
+              Read duration, resolution, codecs, and audio before planning any
+              work.
+            </p>
+          </article>
+
+          <article className="pipeline-step reveal-child" data-step="02">
+            <div className="pipeline-step-heading">
+              <span>02</span>
+              <span>Plan</span>
+            </div>
+            <h3>Build every rendition</h3>
+            <p>
+              Turn delivery settings into segment jobs with independent quality
+              and size targets.
+            </p>
+          </article>
+
+          <article className="pipeline-step reveal-child" data-step="03">
+            <div className="pipeline-step-heading">
+              <span>03</span>
+              <span>Process</span>
+            </div>
+            <h3>Distribute the encode</h3>
+            <p>
+              Lease segments to concurrent workers and reclaim them safely after
+              failures.
+            </p>
+          </article>
+
+          <article className="pipeline-step reveal-child" data-step="04">
+            <div className="pipeline-step-heading">
+              <span>04</span>
+              <span>Verify</span>
+            </div>
+            <h3>Assemble and validate</h3>
+            <p>
+              Join completed segments, verify file size, and publish each final
+              download.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section
+        className="content-section reveal-section"
+        id="workspace"
+        data-reveal
+      >
+        <div className="section-heading reveal-child">
           <div>
             <p className="eyebrow">Export workspace</p>
             <h2>Prepare your video</h2>
@@ -504,7 +611,7 @@ function App() {
         </div>
 
         <div className="workspace-grid">
-          <section className="glossy-card preview-card">
+          <section className="glossy-card preview-card reveal-child">
             <div className="card-heading">
               <div>
                 <p className="card-label">01 / Source</p>
@@ -568,7 +675,7 @@ function App() {
             )}
           </section>
 
-          <section className="glossy-card settings-card">
+          <section className="glossy-card settings-card reveal-child">
             <div className="card-heading">
               <div>
                 <p className="card-label">02 / Configure</p>
@@ -740,8 +847,12 @@ function App() {
       </section>
 
       {deliveryBatch && (
-        <section className="content-section job-section" aria-live="polite">
-          <div className="section-heading">
+        <section
+          className="content-section job-section reveal-section"
+          data-reveal
+          aria-live="polite"
+        >
+          <div className="section-heading reveal-child">
             <div>
               <p className="eyebrow">Live delivery</p>
               <h2>{deliveryBatch.file_name}</h2>
@@ -751,7 +862,7 @@ function App() {
             </span>
           </div>
 
-          <div className="glossy-card batch-overview">
+          <div className="glossy-card batch-overview reveal-child">
             <div className="batch-progress-heading">
               <div>
                 <strong>{getBatchProgress(deliveryBatch)}%</strong>
@@ -861,8 +972,11 @@ function App() {
         </section>
       )}
 
-      <section className="content-section history-section">
-        <div className="section-heading">
+      <section
+        className="content-section history-section reveal-section"
+        data-reveal
+      >
+        <div className="section-heading reveal-child">
           <div>
             <p className="eyebrow">Job history</p>
             <h2>Recent exports</h2>
@@ -877,13 +991,13 @@ function App() {
         )}
 
         {recentJobs.length === 0 ? (
-          <div className="empty-history glossy-card">
+          <div className="empty-history glossy-card reveal-child">
             <span aria-hidden="true">◇</span>
             <h3>No exports yet</h3>
             <p>Your completed and active jobs will appear here.</p>
           </div>
         ) : (
-          <ol className="history-list">
+          <ol className="history-list reveal-child">
             {recentJobs.map((job) => (
               <li className="history-card glossy-card" key={job.job_id}>
                 <div className="history-main">
@@ -957,7 +1071,7 @@ function App() {
         )}
       </section>
 
-      <footer>
+      <footer className="reveal-section" data-reveal>
         <a className="brand footer-brand" href="#top">
           <span className="brand-mark" aria-hidden="true">
             FF
