@@ -37,3 +37,19 @@ Uploaded videos are stored in the Docker volume named
 `framefleet_uploads`, and database data is stored in `framefleet_database`.
 `docker compose down` stops and removes the containers without deleting either
 volume.
+
+## Worker recovery test
+
+The recovery test runs in an isolated Docker Compose project, pauses a worker
+while it owns a segment, and waits for its database lease to expire. A second
+worker must reclaim and complete the segment. The first worker is then resumed
+to verify that its fenced, stale attempt cannot overwrite the accepted output.
+
+Run the test from the repository root:
+
+```bash
+bash scripts/test-worker-recovery.sh
+```
+
+The script verifies the retry count and final download before removing its
+temporary containers, PostgreSQL volume, uploaded video, and generated export.
